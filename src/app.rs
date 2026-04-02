@@ -157,5 +157,4 @@ mod tests {
         // On CI without audio devices it may be None, so just verify the field exists
         let _ = &app.device_name;
     }
-
 }

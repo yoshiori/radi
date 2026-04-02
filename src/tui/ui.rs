@@ -28,8 +28,7 @@ pub fn render(frame: &mut Frame, app: &App) {
         Some(name) => format!("  🎙 {name}"),
         None => "  🎙 No device".to_string(),
     };
-    let device_info =
-        Paragraph::new(device_text).style(Style::default().fg(Color::DarkGray));
+    let device_info = Paragraph::new(device_text).style(Style::default().fg(Color::DarkGray));
     frame.render_widget(device_info, chunks[1]);
 
     // Status
