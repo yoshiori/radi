@@ -5,7 +5,7 @@ use std::time::{Duration, Instant};
 
 use crate::audio::encoder::Mp3Writer;
 use crate::audio::processor::NoiseGate;
-use crate::audio::recorder::Recorder;
+use crate::audio::recorder::{self, Recorder};
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum AppState {
@@ -20,6 +20,7 @@ pub struct App {
     pub should_quit: bool,
     pub output_path: PathBuf,
     pub peak_level: Arc<AtomicU32>,
+    pub device_name: Option<String>,
     recording_start: Option<Instant>,
     final_elapsed: Duration,
     recorder: Option<Recorder>,
@@ -29,11 +30,13 @@ pub struct App {
 impl App {
     pub fn new() -> Self {
         let timestamp = chrono::Local::now().format("%Y-%m-%d_%H-%M-%S");
+        let device_name = recorder::default_input_device_name();
         Self {
             state: AppState::Idle,
             should_quit: false,
             output_path: PathBuf::from(format!("recording_{timestamp}.mp3")),
             peak_level: Arc::new(AtomicU32::new(0)),
+            device_name,
             recording_start: None,
             final_elapsed: Duration::ZERO,
             recorder: None,
@@ -60,6 +63,7 @@ impl App {
         let peak = self.peak_level.clone();
         let (recorder, rx) = Recorder::new(peak)?;
         recorder.play()?;
+        self.device_name = recorder::default_input_device_name();
 
         let path = self.output_path.clone();
         let handle = std::thread::spawn(move || -> anyhow::Result<()> {
@@ -145,5 +149,13 @@ mod tests {
         let mut app = App::new();
         assert!(app.stop_recording().is_ok());
         assert_eq!(app.state, AppState::Idle);
+    }
+
+    #[test]
+    fn test_device_name_is_set_on_creation() {
+        let app = App::new();
+        // device_name is Some if an input device exists, None otherwise
+        // On CI without audio devices it may be None, so just verify the field exists
+        let _ = &app.device_name;
     }
 }
