@@ -1,0 +1,12 @@
+[package]
+name = "radi"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+ratatui = "0.29"
+crossterm = "0.28"
+cpal = "0.15"
+mp3lame-encoder = "0.2"
+anyhow = "1"
+chrono = "0.4"
