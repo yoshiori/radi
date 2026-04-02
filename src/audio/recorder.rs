@@ -69,7 +69,7 @@ fn wpctl_default_source_name() -> Option<String> {
     let stdout = String::from_utf8_lossy(&output.stdout);
     for line in stdout.lines() {
         let trimmed = line.trim();
-        if let Some(value) = trimmed.strip_prefix("alsa.card_name = ") {
+        if let Some(value) = trimmed.strip_prefix("node.description = ") {
             return Some(value.trim_matches('"').to_string());
         }
     }
