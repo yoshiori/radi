@@ -1,8 +1,8 @@
+use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout};
 use ratatui::style::{Color, Style, Stylize};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Gauge, Paragraph};
-use ratatui::Frame;
 
 use crate::app::{App, AppState};
 
@@ -11,7 +11,7 @@ pub fn render(frame: &mut Frame, app: &App) {
         Constraint::Length(3), // title
         Constraint::Length(5), // status
         Constraint::Length(3), // level meter
-        Constraint::Min(1),   // spacer
+        Constraint::Min(1),    // spacer
         Constraint::Length(3), // key hints
     ])
     .split(frame.area());

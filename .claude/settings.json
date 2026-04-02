@@ -1,0 +1,11 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-settings.json",
+  "hooks": {
+    "postWrite": [
+      {
+        "matcher": "**/*.rs",
+        "command": "cargo fmt && cargo clippy -- -D warnings"
+      }
+    ]
+  }
+}

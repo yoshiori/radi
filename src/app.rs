@@ -1,6 +1,6 @@
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::{Duration, Instant};
 
 use crate::audio::encoder::Mp3Writer;
@@ -93,7 +93,9 @@ impl App {
         self.recorder.take();
 
         if let Some(handle) = self.encode_thread.take() {
-            handle.join().map_err(|_| anyhow::anyhow!("Encoding thread panicked"))??;
+            handle
+                .join()
+                .map_err(|_| anyhow::anyhow!("Encoding thread panicked"))??;
         }
 
         let path = self.output_path.clone();
