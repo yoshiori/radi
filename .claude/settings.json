@@ -6,6 +6,18 @@
         "matcher": "**/*.rs",
         "command": "cargo fmt && cargo clippy -- -D warnings"
       }
+    ],
+    "postEdit": [
+      {
+        "matcher": "**/*.rs",
+        "command": "cargo fmt && cargo clippy -- -D warnings"
+      }
+    ],
+    "postNotebookEdit": [
+      {
+        "matcher": "**/*.rs",
+        "command": "cargo fmt && cargo clippy -- -D warnings"
+      }
     ]
   }
 }
