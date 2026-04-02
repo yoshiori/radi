@@ -1,6 +1,6 @@
+use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::mpsc;
-use std::sync::Arc;
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{SampleRate, StreamConfig};
@@ -10,9 +10,7 @@ pub struct Recorder {
 }
 
 impl Recorder {
-    pub fn new(
-        peak: Arc<AtomicU32>,
-    ) -> anyhow::Result<(Self, mpsc::Receiver<Vec<f32>>)> {
+    pub fn new(peak: Arc<AtomicU32>) -> anyhow::Result<(Self, mpsc::Receiver<Vec<f32>>)> {
         let host = cpal::default_host();
 
         let device = host

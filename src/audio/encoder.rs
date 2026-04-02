@@ -12,7 +12,8 @@ pub struct Mp3Writer {
 
 impl Mp3Writer {
     pub fn new(path: &Path) -> anyhow::Result<Self> {
-        let mut builder = Builder::new().ok_or_else(|| anyhow::anyhow!("Failed to create LAME builder"))?;
+        let mut builder =
+            Builder::new().ok_or_else(|| anyhow::anyhow!("Failed to create LAME builder"))?;
         builder
             .set_num_channels(1)
             .map_err(|e| anyhow::anyhow!("{e:?}"))?;
