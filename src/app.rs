@@ -63,6 +63,7 @@ impl App {
         let peak = self.peak_level.clone();
         let (recorder, rx) = Recorder::new(peak)?;
         recorder.play()?;
+        self.device_name = recorder::default_input_device_name();
 
         let path = self.output_path.clone();
         let handle = std::thread::spawn(move || -> anyhow::Result<()> {

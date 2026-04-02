@@ -66,7 +66,10 @@ fn wpctl_default_source_name() -> Option<String> {
     if !output.status.success() {
         return None;
     }
-    let stdout = String::from_utf8_lossy(&output.stdout);
+    parse_wpctl_description(&String::from_utf8_lossy(&output.stdout))
+}
+
+fn parse_wpctl_description(stdout: &str) -> Option<String> {
     for line in stdout.lines() {
         let trimmed = line.trim();
         if let Some(value) = trimmed.strip_prefix("node.description = ") {
@@ -81,16 +84,17 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_parse_wpctl_card_name() {
-        // wpctl_default_source_name parses alsa.card_name from wpctl output
-        // We can't unit test the command itself, but verify the function doesn't panic
-        let _ = wpctl_default_source_name();
+    fn test_parse_wpctl_description() {
+        let input = "id 54, type PipeWire:Interface:Node\n  node.description = \"Built-in Audio Analog Stereo\"\n  alsa.card_name = \"Built-in Audio\"";
+        assert_eq!(
+            parse_wpctl_description(input),
+            Some("Built-in Audio Analog Stereo".to_string())
+        );
     }
 
     #[test]
-    fn test_default_input_device_name_returns_option() {
-        let result = default_input_device_name();
-        // On a machine with audio devices this should be Some, but may be None in CI
-        let _ = result;
+    fn test_parse_wpctl_description_missing() {
+        let input = "id 54, type PipeWire:Interface:Node\n  alsa.card_name = \"Built-in Audio\"";
+        assert_eq!(parse_wpctl_description(input), None);
     }
 }
