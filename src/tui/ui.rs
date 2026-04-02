@@ -9,6 +9,7 @@ use crate::app::{App, AppState};
 pub fn render(frame: &mut Frame, app: &App) {
     let chunks = Layout::vertical([
         Constraint::Length(3), // title
+        Constraint::Length(1), // device info
         Constraint::Length(5), // status
         Constraint::Length(3), // level meter
         Constraint::Min(1),    // spacer
@@ -21,6 +22,15 @@ pub fn render(frame: &mut Frame, app: &App) {
         .style(Style::default().fg(Color::Cyan).bold())
         .block(Block::default().borders(Borders::BOTTOM));
     frame.render_widget(title, chunks[0]);
+
+    // Device info
+    let device_text = match &app.device_name {
+        Some(name) => format!("  🎙 {name}"),
+        None => "  🎙 No device".to_string(),
+    };
+    let device_info =
+        Paragraph::new(device_text).style(Style::default().fg(Color::DarkGray));
+    frame.render_widget(device_info, chunks[1]);
 
     // Status
     let (state_text, state_color) = match &app.state {
@@ -38,17 +48,17 @@ pub fn render(frame: &mut Frame, app: &App) {
                 Line::from(format!("  Output: {}", app.output_path.display())),
             ])
             .block(Block::default().borders(Borders::ALL).title("Status"));
-            frame.render_widget(status, chunks[1]);
+            frame.render_widget(status, chunks[2]);
 
             // Level meter (empty for done state)
             let gauge = Gauge::default()
                 .block(Block::default().borders(Borders::ALL).title("Level"))
                 .gauge_style(Style::default().fg(Color::Green))
                 .ratio(0.0);
-            frame.render_widget(gauge, chunks[2]);
+            frame.render_widget(gauge, chunks[3]);
 
             // Key hints
-            render_hints(frame, chunks[4], &app.state);
+            render_hints(frame, chunks[5], &app.state);
             return;
         }
     };
@@ -61,7 +71,7 @@ pub fn render(frame: &mut Frame, app: &App) {
         Line::from(format!("  Output: {}", app.output_path.display())),
     ])
     .block(Block::default().borders(Borders::ALL).title("Status"));
-    frame.render_widget(status, chunks[1]);
+    frame.render_widget(status, chunks[2]);
 
     // Level meter
     let level = app.peak().min(1.0) as f64;
@@ -76,10 +86,10 @@ pub fn render(frame: &mut Frame, app: &App) {
         .block(Block::default().borders(Borders::ALL).title("Level"))
         .gauge_style(Style::default().fg(gauge_color))
         .ratio(level);
-    frame.render_widget(gauge, chunks[2]);
+    frame.render_widget(gauge, chunks[3]);
 
     // Key hints
-    render_hints(frame, chunks[4], &app.state);
+    render_hints(frame, chunks[5], &app.state);
 }
 
 fn render_hints(frame: &mut Frame, area: ratatui::layout::Rect, state: &AppState) {
