@@ -65,10 +65,15 @@ impl Denoiser {
             pos += RESAMPLE_CHUNK_SIZE;
 
             let waves_in = [chunk];
-            if let Ok(waves_out) = self.resampler.process(&waves_in, None)
-                && let Some(channel) = waves_out.first()
-            {
-                output.extend_from_slice(channel);
+            match self.resampler.process(&waves_in, None) {
+                Ok(waves_out) => {
+                    if let Some(channel) = waves_out.first() {
+                        output.extend_from_slice(channel);
+                    }
+                }
+                Err(e) => {
+                    eprintln!("Resampler error: {e}");
+                }
             }
         }
 
@@ -80,11 +85,11 @@ impl Denoiser {
         let frame_size = DenoiseState::FRAME_SIZE;
         let num_frames = self.frame_buf.len() / frame_size;
         let mut output = Vec::with_capacity(num_frames * frame_size);
+        let mut in_frame = [0.0f32; DenoiseState::FRAME_SIZE];
         let mut out_frame = [0.0f32; DenoiseState::FRAME_SIZE];
 
         for i in 0..num_frames {
             let start = i * frame_size;
-            let mut in_frame = [0.0f32; DenoiseState::FRAME_SIZE];
             for (dst, &src) in in_frame
                 .iter_mut()
                 .zip(self.frame_buf[start..start + frame_size].iter())
