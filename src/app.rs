@@ -4,7 +4,6 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::{Duration, Instant};
 
 use crate::audio::encoder::Mp3Writer;
-use crate::audio::processor::NoiseGate;
 use crate::audio::recorder::{self, Recorder};
 
 #[derive(Debug, Clone, PartialEq)]
@@ -68,9 +67,7 @@ impl App {
         let path = self.output_path.clone();
         let handle = std::thread::spawn(move || -> anyhow::Result<()> {
             let mut writer = Mp3Writer::new(&path)?;
-            let mut gate = NoiseGate::new(0.01, 44100 / 4);
-            while let Ok(mut samples) = rx.recv() {
-                gate.process(&mut samples);
+            while let Ok(samples) = rx.recv() {
                 writer.write_samples(&samples)?;
             }
             writer.finish()?;
