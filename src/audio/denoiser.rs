@@ -41,8 +41,7 @@ impl Denoiser {
     pub fn flush(&mut self) -> Vec<f32> {
         // Flush remaining samples in resample buffer
         if !self.resample_buf.is_empty() {
-            self.resample_buf
-                .resize(RESAMPLE_CHUNK_SIZE, 0.0);
+            self.resample_buf.resize(RESAMPLE_CHUNK_SIZE, 0.0);
             let resampled = self.resample();
             self.frame_buf.extend_from_slice(&resampled);
         }
