@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Radi is a TUI podcast recorder written in Rust (edition 2024). It captures audio input, applies noise gate processing, and encodes output as MP3 files using a streaming pipeline.
+Radi is a TUI podcast recorder written in Rust (edition 2024). It captures audio input, applies ML-based noise suppression (nnnoiseless/RNNoise), and encodes output as MP3 files using a streaming pipeline.
 
 ## Build & Test Commands
 
@@ -24,7 +24,7 @@ A postWrite hook automatically runs `cargo fmt` and `cargo clippy` on `.rs` file
 The app follows a state machine pattern with three concurrent threads:
 
 1. **Audio capture thread** (cpal callback) → sends f32 samples via mpsc channel, updates peak level via `Arc<AtomicU32>`
-2. **Encoding thread** → receives samples, applies noise gate (`processor.rs`), encodes to MP3 (`encoder.rs`), writes to file
+2. **Encoding thread** → receives samples at 44.1kHz, resamples to 48kHz (`rubato`), denoises via ML model (`denoiser.rs`/`nnnoiseless`), encodes to MP3 (`encoder.rs`), writes to file
 3. **Main thread** → runs TUI event loop (100ms poll), reads peak level atomically, manages state transitions
 
 ### State Machine (`app.rs`)
@@ -39,7 +39,7 @@ The app follows a state machine pattern with three concurrent threads:
 - `src/main.rs` — Entry point, keyboard handling, main event loop
 - `src/app.rs` — App state machine, coordinates recorder and encoder
 - `src/audio/recorder.rs` — cpal input stream capture (44.1kHz mono)
-- `src/audio/encoder.rs` — MP3 encoding via libmp3lame (f32→i16 conversion)
-- `src/audio/processor.rs` — Noise gate with amplitude threshold + hold time
+- `src/audio/denoiser.rs` — Resamples 44.1kHz→48kHz (rubato) + ML noise suppression (nnnoiseless, 480-sample frames)
+- `src/audio/encoder.rs` — MP3 encoding via libmp3lame at 48kHz (f32→i16 conversion)
 - `src/tui/event.rs` — Crossterm keyboard event polling
 - `src/tui/ui.rs` — Ratatui layout rendering (status, level meter, hints)

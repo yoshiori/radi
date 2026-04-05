@@ -3,6 +3,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::{Duration, Instant};
 
+use crate::audio::denoiser::Denoiser;
 use crate::audio::encoder::Mp3Writer;
 use crate::audio::recorder::{self, Recorder};
 
@@ -67,8 +68,16 @@ impl App {
         let path = self.output_path.clone();
         let handle = std::thread::spawn(move || -> anyhow::Result<()> {
             let mut writer = Mp3Writer::new(&path)?;
+            let mut denoiser = Denoiser::new()?;
             while let Ok(samples) = rx.recv() {
-                writer.write_samples(&samples)?;
+                let denoised = denoiser.process(&samples);
+                if !denoised.is_empty() {
+                    writer.write_samples(&denoised)?;
+                }
+            }
+            let remaining = denoiser.flush();
+            if !remaining.is_empty() {
+                writer.write_samples(&remaining)?;
             }
             writer.finish()?;
             Ok(())
