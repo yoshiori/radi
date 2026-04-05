@@ -8,6 +8,7 @@ const RESAMPLE_CHUNK_SIZE: usize = 1024;
 pub struct Denoiser {
     denoise: Box<DenoiseState<'static>>,
     resampler: FastFixedIn<f32>,
+    resample_buf: Vec<f32>,
     frame_buf: Vec<f32>,
 }
 
@@ -25,46 +26,53 @@ impl Denoiser {
         Ok(Self {
             denoise: DenoiseState::new(),
             resampler,
+            resample_buf: Vec::with_capacity(RESAMPLE_CHUNK_SIZE),
             frame_buf: Vec::new(),
         })
     }
 
     pub fn process(&mut self, input: &[f32]) -> Vec<f32> {
-        let resampled = self.resample(input);
+        self.resample_buf.extend_from_slice(input);
+        let resampled = self.resample();
         self.frame_buf.extend_from_slice(&resampled);
         self.process_frames()
     }
 
     pub fn flush(&mut self) -> Vec<f32> {
-        // Zero-pad the remaining buffer to a full frame
+        // Flush remaining samples in resample buffer
+        if !self.resample_buf.is_empty() {
+            self.resample_buf
+                .resize(RESAMPLE_CHUNK_SIZE, 0.0);
+            let resampled = self.resample();
+            self.frame_buf.extend_from_slice(&resampled);
+        }
+
+        // Zero-pad the remaining frame buffer to a full frame
         let remaining = self.frame_buf.len() % DenoiseState::FRAME_SIZE;
         if remaining > 0 {
-            let padding = DenoiseState::FRAME_SIZE - remaining;
-            self.frame_buf.extend(std::iter::repeat_n(0.0, padding));
+            let new_len = self.frame_buf.len() + DenoiseState::FRAME_SIZE - remaining;
+            self.frame_buf.resize(new_len, 0.0);
         }
         self.process_frames()
     }
 
-    fn resample(&mut self, input: &[f32]) -> Vec<f32> {
+    fn resample(&mut self) -> Vec<f32> {
         let mut output = Vec::new();
         let mut pos = 0;
 
-        while pos < input.len() {
-            let chunk_len = (input.len() - pos).min(RESAMPLE_CHUNK_SIZE);
-            let chunk = &input[pos..pos + chunk_len];
-            pos += chunk_len;
+        while pos + RESAMPLE_CHUNK_SIZE <= self.resample_buf.len() {
+            let chunk = &self.resample_buf[pos..pos + RESAMPLE_CHUNK_SIZE];
+            pos += RESAMPLE_CHUNK_SIZE;
 
-            let waves_in = vec![chunk.to_vec()];
-            match self.resampler.process(&waves_in, None) {
-                Ok(waves_out) => {
-                    if let Some(channel) = waves_out.first() {
-                        output.extend_from_slice(channel);
-                    }
-                }
-                Err(_) => continue,
+            let waves_in = [chunk];
+            if let Ok(waves_out) = self.resampler.process(&waves_in, None)
+                && let Some(channel) = waves_out.first()
+            {
+                output.extend_from_slice(channel);
             }
         }
 
+        self.resample_buf.drain(..pos);
         output
     }
 
@@ -72,14 +80,17 @@ impl Denoiser {
         let frame_size = DenoiseState::FRAME_SIZE;
         let num_frames = self.frame_buf.len() / frame_size;
         let mut output = Vec::with_capacity(num_frames * frame_size);
-        let mut out_frame = vec![0.0f32; frame_size];
+        let mut out_frame = [0.0f32; DenoiseState::FRAME_SIZE];
 
         for i in 0..num_frames {
             let start = i * frame_size;
-            let in_frame: Vec<f32> = self.frame_buf[start..start + frame_size]
-                .iter()
-                .map(|&s| s * 32767.0)
-                .collect();
+            let mut in_frame = [0.0f32; DenoiseState::FRAME_SIZE];
+            for (dst, &src) in in_frame
+                .iter_mut()
+                .zip(self.frame_buf[start..start + frame_size].iter())
+            {
+                *dst = src * 32767.0;
+            }
 
             self.denoise.process_frame(&mut out_frame, &in_frame);
 
@@ -123,7 +134,8 @@ mod tests {
 
         // Output should be approximately input_len * (48000/44100)
         let expected = (input_len as f64 * (OUTPUT_SAMPLE_RATE / INPUT_SAMPLE_RATE)) as usize;
-        let tolerance = DenoiseState::FRAME_SIZE * 2;
+        // Tolerance accounts for resample chunk padding on flush + frame padding
+        let tolerance = RESAMPLE_CHUNK_SIZE * 2;
         assert!(
             output.len().abs_diff(expected) < tolerance,
             "output len {} should be close to expected {}",
@@ -142,6 +154,20 @@ mod tests {
         let total = result.len() + flushed.len();
         assert!(total > 0, "flush should produce output");
         // Flush should produce at least one frame from the remainder
-        assert!(flushed.len() > 0, "flush should process remaining buffer");
+        assert!(!flushed.is_empty(), "flush should process remaining buffer");
+    }
+
+    #[test]
+    fn test_small_input_buffered() {
+        let mut denoiser = Denoiser::new().unwrap();
+        // Feed less than one resample chunk — should buffer without losing samples
+        let input = vec![0.1f32; 200];
+        let result1 = denoiser.process(&input);
+        // Feed more to complete a chunk
+        let input2 = vec![0.1f32; 900];
+        let result2 = denoiser.process(&input2);
+        let flushed = denoiser.flush();
+        let total = result1.len() + result2.len() + flushed.len();
+        assert!(total > 0, "buffered small inputs should produce output");
     }
 }
