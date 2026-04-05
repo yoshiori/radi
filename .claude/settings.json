@@ -7,7 +7,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "FILE_PATH=$(jq -r '.tool_input.file_path // .tool_input.file_text' 2>/dev/null); if [[ \"$FILE_PATH\" == *.rs ]]; then cargo fmt && cargo clippy -- -D warnings; fi"
+            "command": "FILE_PATH=$(jq -r '.tool_input.file_path // .tool_input.file_text'); case \"$FILE_PATH\" in *.rs) cargo fmt && cargo clippy -- -D warnings;; esac"
           }
         ]
       }
