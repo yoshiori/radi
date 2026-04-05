@@ -18,7 +18,7 @@ impl Mp3Writer {
             .set_num_channels(1)
             .map_err(|e| anyhow::anyhow!("{e:?}"))?;
         builder
-            .set_sample_rate(44_100)
+            .set_sample_rate(48_000)
             .map_err(|e| anyhow::anyhow!("{e:?}"))?;
         builder
             .set_quality(mp3lame_encoder::Quality::Best)
