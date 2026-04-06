@@ -28,13 +28,13 @@ pub struct App {
 }
 
 impl App {
-    pub fn new() -> Self {
+    pub fn new(output_dir: PathBuf) -> Self {
         let timestamp = chrono::Local::now().format("%Y-%m-%d_%H-%M-%S");
         let device_name = recorder::default_input_device_name();
         Self {
             state: AppState::Idle,
             should_quit: false,
-            output_path: PathBuf::from(format!("recording_{timestamp}.mp3")),
+            output_path: output_dir.join(format!("recording_{timestamp}.mp3")),
             peak_level: Arc::new(AtomicU32::new(0)),
             device_name,
             recording_start: None,
@@ -125,41 +125,49 @@ mod tests {
 
     #[test]
     fn test_initial_state_is_idle() {
-        let app = App::new();
+        let app = App::new(PathBuf::from("."));
         assert_eq!(app.state, AppState::Idle);
         assert!(!app.should_quit);
     }
 
     #[test]
     fn test_elapsed_is_zero_before_recording() {
-        let app = App::new();
+        let app = App::new(PathBuf::from("."));
         assert_eq!(app.elapsed(), Duration::ZERO);
     }
 
     #[test]
     fn test_peak_is_zero_initially() {
-        let app = App::new();
+        let app = App::new(PathBuf::from("."));
         assert_eq!(app.peak(), 0.0);
     }
 
     #[test]
     fn test_output_path_has_timestamp() {
-        let app = App::new();
+        let app = App::new(PathBuf::from("."));
         let path = app.output_path.to_str().unwrap();
-        assert!(path.starts_with("recording_"));
+        assert!(path.contains("recording_"));
+        assert!(path.ends_with(".mp3"));
+    }
+
+    #[test]
+    fn test_output_path_uses_custom_dir() {
+        let app = App::new(PathBuf::from("/tmp/out"));
+        let path = app.output_path.to_str().unwrap();
+        assert!(path.starts_with("/tmp/out/recording_"));
         assert!(path.ends_with(".mp3"));
     }
 
     #[test]
     fn test_stop_recording_noop_when_idle() {
-        let mut app = App::new();
+        let mut app = App::new(PathBuf::from("."));
         assert!(app.stop_recording().is_ok());
         assert_eq!(app.state, AppState::Idle);
     }
 
     #[test]
     fn test_device_name_is_set_on_creation() {
-        let app = App::new();
+        let app = App::new(PathBuf::from("."));
         // device_name is Some if an input device exists, None otherwise
         // On CI without audio devices it may be None, so just verify the field exists
         let _ = &app.device_name;
