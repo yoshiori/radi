@@ -14,7 +14,13 @@ use tui::{event, ui};
 fn main() -> anyhow::Result<()> {
     let config = config::Config::load()?;
     let output_dir = config.output_dir_or_default();
-    std::fs::create_dir_all(&output_dir)?;
+    std::fs::create_dir_all(&output_dir).map_err(|e| {
+        anyhow::anyhow!(
+            "Failed to create output directory {}: {}",
+            output_dir.display(),
+            e
+        )
+    })?;
 
     let mut terminal = ratatui::init();
     let result = run_app(&mut terminal, output_dir);
