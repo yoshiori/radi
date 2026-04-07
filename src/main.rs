@@ -1,7 +1,9 @@
 mod app;
 mod audio;
+mod config;
 mod tui;
 
+use std::path::PathBuf;
 use std::time::Duration;
 
 use crossterm::event::KeyCode;
@@ -10,14 +12,24 @@ use app::{App, AppState};
 use tui::{event, ui};
 
 fn main() -> anyhow::Result<()> {
+    let config = config::Config::load()?;
+    let output_dir = config.output_dir_or_default();
+    std::fs::create_dir_all(&output_dir).map_err(|e| {
+        anyhow::anyhow!(
+            "Failed to create output directory {}: {}",
+            output_dir.display(),
+            e
+        )
+    })?;
+
     let mut terminal = ratatui::init();
-    let result = run_app(&mut terminal);
+    let result = run_app(&mut terminal, output_dir);
     ratatui::restore();
     result
 }
 
-fn run_app(terminal: &mut ratatui::DefaultTerminal) -> anyhow::Result<()> {
-    let mut app = App::new();
+fn run_app(terminal: &mut ratatui::DefaultTerminal, output_dir: PathBuf) -> anyhow::Result<()> {
+    let mut app = App::new(output_dir.clone());
 
     loop {
         terminal.draw(|frame| ui::render(frame, &app))?;
@@ -31,7 +43,7 @@ fn run_app(terminal: &mut ratatui::DefaultTerminal) -> anyhow::Result<()> {
                     if app.state == AppState::Idle {
                         app.start_recording()?;
                     } else if matches!(app.state, AppState::Done(_)) {
-                        app = App::new();
+                        app = App::new(output_dir.clone());
                         app.start_recording()?;
                     }
                 }
