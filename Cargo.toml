@@ -2,6 +2,9 @@
 name = "radi"
 version = "0.1.0"
 edition = "2024"
+license = "MIT"
+description = "A TUI podcast recorder with ML noise suppression"
+repository = "https://github.com/yoshiori/radi"
 
 [dependencies]
 ratatui = "0.29"
