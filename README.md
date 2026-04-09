@@ -58,9 +58,9 @@ radi
 
 | Key | Action                            |
 | --- | --------------------------------- |
-| `R` | Start a new recording             |
-| `S` | Stop and save the current take    |
-| `Q` | Quit (stops the current take too) |
+| `r` | Start a new recording             |
+| `s` | Stop and save the current take    |
+| `q` | Quit (stops the current take too) |
 
 Recordings are saved as `recording_YYYY-MM-DD_HH-MM-SS.mp3`.
 
