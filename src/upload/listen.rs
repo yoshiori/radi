@@ -97,10 +97,11 @@ impl ListenClient {
             .send()
             .context("send graphql request")?;
         let status = resp.status();
-        let json: Value = resp.json().context("decode graphql response")?;
         if !status.is_success() {
-            return Err(anyhow!("graphql http {}: {}", status, json));
+            let body = resp.text().unwrap_or_default();
+            return Err(anyhow!("graphql http {}: {}", status, body));
         }
+        let json: Value = resp.json().context("decode graphql response")?;
         if let Some(errors) = json.get("errors")
             && !errors.as_array().map(|a| a.is_empty()).unwrap_or(true)
         {
