@@ -27,14 +27,26 @@ fn render_quit_popup(frame: &mut Frame, previous: &AppState) {
     let body = Text::from(vec![
         Line::from(question),
         Line::from(""),
-        Line::from(Span::styled(
-            "[y] Yes    [n] Cancel",
-            Style::default().fg(Color::DarkGray),
-        )),
+        Line::from(vec![
+            Span::styled(
+                "[y]",
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::raw(" Yes    "),
+            Span::styled(
+                "[n]",
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::raw(" Cancel"),
+        ]),
     ]);
     let popup = Popup::new(body)
         .title(" Confirm ")
-        .style(Style::new().fg(Color::White).bg(Color::DarkGray));
+        .style(Style::new().fg(Color::White).bg(Color::Black));
     frame.render_widget(&popup, frame.area());
 }
 
