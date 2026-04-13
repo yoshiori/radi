@@ -18,6 +18,7 @@ pub enum AppState {
     Uploading(PathBuf),
     Uploaded { path: PathBuf, webview_url: String },
     UploadFailed { path: PathBuf, error: String },
+    ConfirmQuit { previous: Box<AppState> },
 }
 
 pub struct App {

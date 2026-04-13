@@ -44,6 +44,25 @@ fn run_app(
                 continue;
             }
             match key.code {
+                KeyCode::Char('y') if matches!(app.state, AppState::ConfirmQuit { .. }) => {
+                    if let AppState::ConfirmQuit { previous } =
+                        std::mem::replace(&mut app.state, AppState::Idle)
+                    {
+                        app.state = *previous;
+                    }
+                    if app.state == AppState::Recording {
+                        app.stop_recording()?;
+                    }
+                    app.should_quit = true;
+                }
+                KeyCode::Char('n') if matches!(app.state, AppState::ConfirmQuit { .. }) => {
+                    if let AppState::ConfirmQuit { previous } =
+                        std::mem::replace(&mut app.state, AppState::Idle)
+                    {
+                        app.state = *previous;
+                    }
+                }
+                _ if matches!(app.state, AppState::ConfirmQuit { .. }) => {}
                 KeyCode::Char('r') => match app.state {
                     AppState::Idle => app.start_recording()?,
                     AppState::Done(_)
@@ -86,10 +105,10 @@ fn run_app(
                     }
                 }
                 KeyCode::Char('q') => {
-                    if app.state == AppState::Recording {
-                        app.stop_recording()?;
-                    }
-                    app.should_quit = true;
+                    let previous = std::mem::replace(&mut app.state, AppState::Idle);
+                    app.state = AppState::ConfirmQuit {
+                        previous: Box::new(previous),
+                    };
                 }
                 _ => {}
             }
