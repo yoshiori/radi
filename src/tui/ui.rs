@@ -1,12 +1,44 @@
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout};
-use ratatui::style::{Color, Style, Stylize};
-use ratatui::text::{Line, Span};
+use ratatui::style::{Color, Modifier, Style};
+use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Block, Borders, Gauge, Paragraph};
+use tui_popup::Popup;
 
 use crate::app::{App, AppState};
 
 pub fn render(frame: &mut Frame, app: &App) {
+    // For ConfirmQuit, render the underlying state as a dimmed backdrop
+    // and overlay the confirmation popup on top.
+    if let AppState::ConfirmQuit { previous } = &app.state {
+        render_main(frame, app, previous);
+        render_quit_popup(frame, previous);
+        return;
+    }
+    render_main(frame, app, &app.state);
+}
+
+fn render_quit_popup(frame: &mut Frame, previous: &AppState) {
+    let question = if matches!(previous, AppState::Recording) {
+        "Stop recording and quit?"
+    } else {
+        "Quit radi?"
+    };
+    let body = Text::from(vec![
+        Line::from(question),
+        Line::from(""),
+        Line::from(Span::styled(
+            "[y] Yes    [n] Cancel",
+            Style::default().fg(Color::DarkGray),
+        )),
+    ]);
+    let popup = Popup::new(body)
+        .title(" Confirm ")
+        .style(Style::new().fg(Color::White).bg(Color::DarkGray));
+    frame.render_widget(&popup, frame.area());
+}
+
+fn render_main(frame: &mut Frame, app: &App, state: &AppState) {
     let chunks = Layout::vertical([
         Constraint::Length(3), // title
         Constraint::Length(1), // device info
@@ -19,7 +51,11 @@ pub fn render(frame: &mut Frame, app: &App) {
 
     // Title
     let title = Paragraph::new("radi - Podcast Recorder")
-        .style(Style::default().fg(Color::Cyan).bold())
+        .style(
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        )
         .block(Block::default().borders(Borders::BOTTOM));
     frame.render_widget(title, chunks[0]);
 
@@ -32,7 +68,7 @@ pub fn render(frame: &mut Frame, app: &App) {
     frame.render_widget(device_info, chunks[1]);
 
     // Status
-    let (state_text, state_color) = match &app.state {
+    let (state_text, state_color) = match state {
         AppState::Idle => ("■ Idle", Color::Gray),
         AppState::Recording => ("● Recording", Color::Red),
         AppState::Processing => ("◌ Processing...", Color::Yellow),
