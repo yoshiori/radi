@@ -36,6 +36,72 @@ pub fn render(frame: &mut Frame, app: &App) {
         AppState::Idle => ("■ Idle", Color::Gray),
         AppState::Recording => ("● Recording", Color::Red),
         AppState::Processing => ("◌ Processing...", Color::Yellow),
+        AppState::Uploading(path) => {
+            let status = Paragraph::new(vec![
+                Line::from(Span::styled(
+                    "⇪ Uploading to LISTEN...",
+                    Style::default().fg(Color::Cyan),
+                )),
+                Line::from(""),
+                Line::from(format!("  File: {}", path.display())),
+            ])
+            .block(Block::default().borders(Borders::ALL).title("Status"));
+            frame.render_widget(status, chunks[2]);
+
+            let gauge = Gauge::default()
+                .block(Block::default().borders(Borders::ALL).title("Upload"))
+                .gauge_style(Style::default().fg(Color::Cyan))
+                .label("in flight")
+                .ratio(0.5);
+            frame.render_widget(gauge, chunks[3]);
+
+            render_hints(frame, chunks[5], &app.state);
+            return;
+        }
+        AppState::Uploaded { path, episode_id } => {
+            let status = Paragraph::new(vec![
+                Line::from(Span::styled(
+                    "✓ Uploaded",
+                    Style::default().fg(Color::Green),
+                )),
+                Line::from(""),
+                Line::from(format!("  Episode: {episode_id}")),
+                Line::from(format!("  File:    {}", path.display())),
+            ])
+            .block(Block::default().borders(Borders::ALL).title("Status"));
+            frame.render_widget(status, chunks[2]);
+
+            let gauge = Gauge::default()
+                .block(Block::default().borders(Borders::ALL).title("Upload"))
+                .gauge_style(Style::default().fg(Color::Green))
+                .ratio(1.0);
+            frame.render_widget(gauge, chunks[3]);
+
+            render_hints(frame, chunks[5], &app.state);
+            return;
+        }
+        AppState::UploadFailed { path, error } => {
+            let status = Paragraph::new(vec![
+                Line::from(Span::styled(
+                    "✗ Upload failed",
+                    Style::default().fg(Color::Red),
+                )),
+                Line::from(""),
+                Line::from(format!("  {error}")),
+                Line::from(format!("  File: {}", path.display())),
+            ])
+            .block(Block::default().borders(Borders::ALL).title("Status"));
+            frame.render_widget(status, chunks[2]);
+
+            let gauge = Gauge::default()
+                .block(Block::default().borders(Borders::ALL).title("Upload"))
+                .gauge_style(Style::default().fg(Color::Red))
+                .ratio(0.0);
+            frame.render_widget(gauge, chunks[3]);
+
+            render_hints(frame, chunks[5], &app.state);
+            return;
+        }
         AppState::Done(path) => {
             let text = format!("✓ Done: {}", path.display());
             // Render directly since we need owned string
@@ -96,7 +162,10 @@ fn render_hints(frame: &mut Frame, area: ratatui::layout::Rect, state: &AppState
         AppState::Idle => "[R] Record  [Q] Quit",
         AppState::Recording => "[S] Stop & Save  [Q] Stop & Quit",
         AppState::Processing => "Processing...",
-        AppState::Done(_) => "[R] New Recording  [Q] Quit",
+        AppState::Done(_) => "[U] Upload to LISTEN  [R] New Recording  [Q] Quit",
+        AppState::Uploading(_) => "Uploading...",
+        AppState::Uploaded { .. } => "[R] New Recording  [Q] Quit",
+        AppState::UploadFailed { .. } => "[U] Retry Upload  [R] New Recording  [Q] Quit",
     };
     let paragraph = Paragraph::new(hints)
         .style(Style::default().fg(Color::DarkGray))
