@@ -6,8 +6,10 @@ encodes the result to MP3 in a streaming pipeline.
 
 ## Features
 
-- Terminal UI built with [ratatui](https://ratatui.rs/) and crossterm
-- Real-time peak level meter
+- Terminal UI built with [ratatui](https://ratatui.rs/) and crossterm, featuring
+  a big elapsed-time readout ([`tui-big-text`](https://crates.io/crates/tui-big-text)),
+  a scrolling waveform sparkline, a dB-labelled level gauge, and a "Recent"
+  panel listing prior takes from the output directory
 - ML noise suppression (RNNoise / `nnnoiseless`)
 - Streaming MP3 encoding (LAME, 48 kHz)
 - One-key upload of finished recordings to [LISTEN](https://listen.style/) as a DRAFT episode
@@ -62,7 +64,8 @@ radi
 | `r` | Start a new recording (also: retake after a finished take)  |
 | `s` | Stop and save the current take                              |
 | `u` | Upload the finished take to LISTEN as a DRAFT episode       |
-| `q` | Quit (stops the current take too)                           |
+| `o` | Open the uploaded episode in your browser                   |
+| `q` | Quit (opens a confirmation popup; stops the take if needed) |
 
 Recordings are saved as `recording_YYYY-MM-DD_HH-MM-SS.mp3`.
 
