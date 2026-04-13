@@ -77,7 +77,7 @@ pub struct ListenClient {
 impl ListenClient {
     pub fn new(endpoint: impl Into<String>, token: impl Into<String>) -> anyhow::Result<Self> {
         let client = reqwest::blocking::Client::builder()
-            .timeout(std::time::Duration::from_secs(120))
+            .timeout(std::time::Duration::from_secs(600))
             .build()
             .context("build reqwest client")?;
         Ok(Self {
@@ -140,13 +140,13 @@ impl ListenClient {
         file_path: &Path,
         content_type: &str,
     ) -> anyhow::Result<()> {
-        let bytes = std::fs::read(file_path)
-            .with_context(|| format!("read audio file {}", file_path.display()))?;
+        let file = std::fs::File::open(file_path)
+            .with_context(|| format!("open audio file {}", file_path.display()))?;
         let resp = self
             .client
             .put(upload_url)
             .header("Content-Type", content_type)
-            .body(bytes)
+            .body(file)
             .send()
             .context("send presigned PUT")?;
         if !resp.status().is_success() {
