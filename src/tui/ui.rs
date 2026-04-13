@@ -7,7 +7,7 @@ use throbber_widgets_tui::{Throbber, ThrobberState};
 use tui_big_text::{BigText, PixelSize};
 use tui_popup::Popup;
 
-use crate::app::{App, AppState};
+use crate::app::{App, AppState, RecentRecording};
 
 // Unified palette. Using named constants keeps state-specific tinting
 // consistent across the timer, borders, status line and level meter.
@@ -78,6 +78,7 @@ fn render_main(frame: &mut Frame, app: &App, state: &AppState) {
     render_header(frame, chunks[0], app, state, accent);
     render_center(frame, chunks[1], app, state, accent, use_big_timer);
     render_level(frame, chunks[2], app, state, accent);
+    render_recent(frame, chunks[3], app, accent);
     render_hints(frame, chunks[4], state, accent);
 }
 
@@ -366,6 +367,99 @@ fn render_level(frame: &mut Frame, area: Rect, app: &App, state: &AppState, acce
             .max(100)
             .style(Style::default().fg(sparkline_color));
         frame.render_widget(sparkline, rows[1]);
+    }
+}
+
+fn render_recent(frame: &mut Frame, area: Rect, app: &App, accent: Color) {
+    if area.height == 0 {
+        return;
+    }
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(ACCENT_DIM))
+        .title(Line::from(vec![
+            Span::raw(" "),
+            Span::styled("Recent", Style::default().fg(accent).bold()),
+            Span::styled(
+                format!(" ({}) ", app.recent().len()),
+                Style::default().fg(ACCENT_DIM),
+            ),
+        ]));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    if inner.height == 0 {
+        return;
+    }
+
+    let recent = app.recent();
+    if recent.is_empty() {
+        let empty = Paragraph::new(Line::from(Span::styled(
+            "No recordings yet — press [r] to start.",
+            Style::default().fg(ACCENT_DIM),
+        )))
+        .alignment(Alignment::Center);
+        frame.render_widget(empty, inner);
+        return;
+    }
+
+    let current = app.output_path.as_path();
+    let rows = inner.height as usize;
+    let lines: Vec<Line> = recent
+        .iter()
+        .take(rows)
+        .map(|r| format_recent_line(r, current == r.path))
+        .collect();
+    frame.render_widget(Paragraph::new(lines), inner);
+}
+
+fn format_recent_line(rec: &RecentRecording, is_current: bool) -> Line<'_> {
+    let name = rec.path.file_name().and_then(|s| s.to_str()).unwrap_or("?");
+    let size = format_size(rec.size_bytes);
+    let when = rec
+        .modified
+        .map(|m| {
+            let dt: chrono::DateTime<chrono::Local> = m.into();
+            dt.format("%m-%d %H:%M").to_string()
+        })
+        .unwrap_or_else(|| "—".to_string());
+
+    let marker = if is_current { "▸ " } else { "  " };
+    let marker_style = if is_current {
+        Style::default().fg(REC).add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(ACCENT_DIM)
+    };
+    let name_style = if is_current {
+        Style::default()
+            .fg(Color::White)
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(Color::Gray)
+    };
+
+    Line::from(vec![
+        Span::styled(marker, marker_style),
+        Span::styled(format!("{when:<12}"), Style::default().fg(ACCENT_DIM)),
+        Span::styled(format!("{size:>9}  "), Style::default().fg(ACCENT_DIM)),
+        Span::styled(name.to_string(), name_style),
+    ])
+}
+
+fn format_size(bytes: u64) -> String {
+    const KB: f64 = 1024.0;
+    const MB: f64 = KB * 1024.0;
+    const GB: f64 = MB * 1024.0;
+    let b = bytes as f64;
+    if b >= GB {
+        format!("{:.2} GB", b / GB)
+    } else if b >= MB {
+        format!("{:.1} MB", b / MB)
+    } else if b >= KB {
+        format!("{:.0} KB", b / KB)
+    } else {
+        format!("{bytes} B")
     }
 }
 

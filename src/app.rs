@@ -2,11 +2,24 @@ use std::collections::VecDeque;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
 /// Number of peak-level samples retained for the sparkline waveform.
 /// At the ~100ms UI tick this covers roughly the last 12 seconds.
 pub const PEAK_HISTORY_CAPACITY: usize = 120;
+
+/// How many previous recordings to surface in the TUI's "Recent" panel.
+pub const MAX_RECENT_RECORDINGS: usize = 16;
+
+/// Throttle interval for rescanning the output directory.
+const RECENT_REFRESH_INTERVAL: Duration = Duration::from_millis(750);
+
+#[derive(Debug, Clone)]
+pub struct RecentRecording {
+    pub path: PathBuf,
+    pub size_bytes: u64,
+    pub modified: Option<SystemTime>,
+}
 
 use crate::audio::denoiser::Denoiser;
 use crate::audio::encoder::Mp3Writer;
@@ -30,6 +43,7 @@ pub struct App {
     pub state: AppState,
     pub should_quit: bool,
     pub output_path: PathBuf,
+    pub output_dir: PathBuf,
     pub peak_level: Arc<AtomicU32>,
     pub device_name: Option<String>,
     recording_start: Option<Instant>,
@@ -38,16 +52,20 @@ pub struct App {
     encode_thread: Option<std::thread::JoinHandle<anyhow::Result<()>>>,
     upload_thread: Option<std::thread::JoinHandle<anyhow::Result<String>>>,
     peak_history: VecDeque<f32>,
+    recent: Vec<RecentRecording>,
+    recent_last_refresh: Option<Instant>,
 }
 
 impl App {
     pub fn new(output_dir: PathBuf) -> Self {
         let timestamp = chrono::Local::now().format("%Y-%m-%d_%H-%M-%S");
         let device_name = recorder::default_input_device_name();
-        Self {
+        let output_path = output_dir.join(format!("recording_{timestamp}.mp3"));
+        let mut app = Self {
             state: AppState::Idle,
             should_quit: false,
-            output_path: output_dir.join(format!("recording_{timestamp}.mp3")),
+            output_path,
+            output_dir,
             peak_level: Arc::new(AtomicU32::new(0)),
             device_name,
             recording_start: None,
@@ -56,7 +74,49 @@ impl App {
             encode_thread: None,
             upload_thread: None,
             peak_history: VecDeque::with_capacity(PEAK_HISTORY_CAPACITY),
-        }
+            recent: Vec::new(),
+            recent_last_refresh: None,
+        };
+        app.refresh_recent();
+        app
+    }
+
+    pub fn recent(&self) -> &[RecentRecording] {
+        &self.recent
+    }
+
+    /// Rescans `output_dir` for existing mp3s. Cheap for the tens of files a
+    /// user realistically accumulates; throttled from `tick` so a full loop
+    /// doesn't hammer the filesystem.
+    fn refresh_recent(&mut self) {
+        self.recent_last_refresh = Some(Instant::now());
+        let Ok(entries) = std::fs::read_dir(&self.output_dir) else {
+            self.recent.clear();
+            return;
+        };
+        let mut list: Vec<RecentRecording> = entries
+            .flatten()
+            .filter_map(|e| {
+                let path = e.path();
+                if path.extension().and_then(|s| s.to_str()) != Some("mp3") {
+                    return None;
+                }
+                let meta = e.metadata().ok()?;
+                Some(RecentRecording {
+                    path,
+                    size_bytes: meta.len(),
+                    modified: meta.modified().ok(),
+                })
+            })
+            .collect();
+        // Newest first; fall back to path ordering when mtime is unavailable
+        // (e.g. odd filesystems) so the list stays deterministic.
+        list.sort_by(|a, b| match (b.modified, a.modified) {
+            (Some(x), Some(y)) => x.cmp(&y),
+            _ => b.path.cmp(&a.path),
+        });
+        list.truncate(MAX_RECENT_RECORDINGS);
+        self.recent = list;
     }
 
     pub fn elapsed(&self) -> Duration {
@@ -170,6 +230,13 @@ impl App {
             self.peak_history.pop_front();
         }
         self.peak_history.push_back(self.peak());
+
+        if self
+            .recent_last_refresh
+            .is_none_or(|t| t.elapsed() >= RECENT_REFRESH_INTERVAL)
+        {
+            self.refresh_recent();
+        }
 
         if !self.upload_thread.as_ref().is_some_and(|h| h.is_finished()) {
             return;
