@@ -227,7 +227,11 @@ fn render_hints(frame: &mut Frame, area: ratatui::layout::Rect, state: &AppState
             ("q", " Quit"),
         ],
         AppState::Uploading(_) => &[],
-        AppState::Uploaded { .. } => &[("r", " New Recording  "), ("q", " Quit")],
+        AppState::Uploaded { .. } => &[
+            ("o", " Open in browser  "),
+            ("r", " New Recording  "),
+            ("q", " Quit"),
+        ],
         AppState::UploadFailed { .. } => &[
             ("u", " Retry Upload  "),
             ("r", " New Recording  "),

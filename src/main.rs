@@ -73,6 +73,13 @@ fn run_app(
                 KeyCode::Char('s') if app.state == AppState::Recording => {
                     app.stop_recording()?;
                 }
+                KeyCode::Char('o') => {
+                    if let AppState::Uploaded { webview_url, .. } = &app.state {
+                        // Failures here are non-fatal: the URL is still shown
+                        // on screen for the user to copy manually.
+                        let _ = open::that_detached(webview_url);
+                    }
+                }
                 KeyCode::Char('u') => {
                     let path = match &app.state {
                         AppState::Done(p) | AppState::UploadFailed { path: p, .. } => {
