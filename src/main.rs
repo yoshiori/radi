@@ -58,18 +58,26 @@ fn run_app(
                     app.stop_recording()?;
                 }
                 KeyCode::Char('u') => {
-                    if let Some(listen) = listen.as_ref() {
-                        if let AppState::UploadFailed { path, .. } = app.state.clone() {
-                            app.state = AppState::Done(path);
-                        }
-                        if matches!(app.state, AppState::Done(_)) {
-                            let title = app
-                                .output_path
-                                .file_stem()
-                                .and_then(|s| s.to_str())
-                                .unwrap_or("recording")
-                                .to_string();
-                            app.start_upload(listen, title)?;
+                    if let AppState::UploadFailed { path, .. } = app.state.clone() {
+                        app.state = AppState::Done(path);
+                    }
+                    if let AppState::Done(path) = app.state.clone() {
+                        match listen.as_ref() {
+                            Some(listen) => {
+                                let title = app
+                                    .output_path
+                                    .file_stem()
+                                    .and_then(|s| s.to_str())
+                                    .unwrap_or("recording")
+                                    .to_string();
+                                app.start_upload(listen, title)?;
+                            }
+                            None => {
+                                app.state = AppState::UploadFailed {
+                                    path,
+                                    error: "LISTEN not configured: add a [listen] section with podcast_id to ~/.config/radi/config.toml".into(),
+                                };
+                            }
                         }
                     }
                 }
