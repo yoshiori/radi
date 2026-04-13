@@ -243,21 +243,51 @@ fn render_main(frame: &mut Frame, app: &App, state: &AppState) {
 }
 
 fn render_hints(frame: &mut Frame, area: ratatui::layout::Rect, state: &AppState) {
-    let hints = match state {
-        AppState::Idle => "[r] Record  [q] Quit",
-        AppState::Recording => "[s] Stop & Save  [q] Stop & Quit",
-        AppState::Processing => "Processing...",
-        AppState::Done(_) => "[u] Upload to LISTEN  [r] New Recording  [q] Quit",
-        AppState::Uploading(_) => "Uploading...",
-        AppState::Uploaded { .. } => "[r] New Recording  [q] Quit",
-        AppState::UploadFailed { .. } => "[u] Retry Upload  [r] New Recording  [q] Quit",
+    let hints: &[(&str, &str)] = match state {
+        AppState::Idle => &[("r", " Record  "), ("q", " Quit")],
+        AppState::Recording => &[("s", " Stop & Save  "), ("q", " Stop & Quit")],
+        AppState::Processing => &[],
+        AppState::Done(_) => &[
+            ("u", " Upload to LISTEN  "),
+            ("r", " New Recording  "),
+            ("q", " Quit"),
+        ],
+        AppState::Uploading(_) => &[],
+        AppState::Uploaded { .. } => &[("r", " New Recording  "), ("q", " Quit")],
+        AppState::UploadFailed { .. } => &[
+            ("u", " Retry Upload  "),
+            ("r", " New Recording  "),
+            ("q", " Quit"),
+        ],
         // ConfirmQuit is rendered as an overlay; render_main is only called
         // with the prior state, so this arm is unreachable.
-        AppState::ConfirmQuit { .. } => "",
+        AppState::ConfirmQuit { .. } => &[],
     };
-    let paragraph = Paragraph::new(hints)
-        .style(Style::default().fg(Color::DarkGray))
-        .block(Block::default().borders(Borders::TOP));
+    let line = if hints.is_empty() {
+        let placeholder = match state {
+            AppState::Processing => "Processing...",
+            AppState::Uploading(_) => "Uploading...",
+            _ => "",
+        };
+        Line::from(Span::styled(
+            placeholder,
+            Style::default().fg(Color::DarkGray),
+        ))
+    } else {
+        let key_style = Style::default()
+            .fg(Color::Yellow)
+            .add_modifier(Modifier::BOLD);
+        let label_style = Style::default().fg(Color::DarkGray);
+        let mut spans = Vec::with_capacity(hints.len() * 4);
+        for (key, label) in hints {
+            spans.push(Span::styled("[", label_style));
+            spans.push(Span::styled(*key, key_style));
+            spans.push(Span::styled("]", label_style));
+            spans.push(Span::styled(*label, label_style));
+        }
+        Line::from(spans)
+    };
+    let paragraph = Paragraph::new(line).block(Block::default().borders(Borders::TOP));
     frame.render_widget(paragraph, area);
 }
 
