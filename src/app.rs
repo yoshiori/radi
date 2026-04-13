@@ -125,7 +125,7 @@ impl App {
             return Ok(());
         };
         let token = listen
-            .resolved_token()
+            .resolved_token()?
             .ok_or_else(|| anyhow::anyhow!("LISTEN API token not configured (set [listen].api_token in config.toml or LISTEN_API_TOKEN env var)"))?;
         let endpoint = listen.endpoint_or_default().to_string();
         let podcast_id = listen.podcast_id.clone();
