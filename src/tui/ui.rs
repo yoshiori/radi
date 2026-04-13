@@ -160,33 +160,7 @@ fn render_main(frame: &mut Frame, app: &App, state: &AppState) {
             render_hints(frame, chunks[5], state);
             return;
         }
-        AppState::ConfirmQuit { previous } => {
-            let recording = matches!(previous.as_ref(), AppState::Recording);
-            let prompt = if recording {
-                "Stop recording and quit? [y/n]"
-            } else {
-                "Quit radi? [y/n]"
-            };
-            let status = Paragraph::new(vec![
-                Line::from(Span::styled(
-                    "? Confirm",
-                    Style::default().fg(Color::Yellow),
-                )),
-                Line::from(""),
-                Line::from(format!("  {prompt}")),
-            ])
-            .block(Block::default().borders(Borders::ALL).title("Status"));
-            frame.render_widget(status, chunks[2]);
-
-            let gauge = Gauge::default()
-                .block(Block::default().borders(Borders::ALL).title("Level"))
-                .gauge_style(Style::default().fg(Color::Yellow))
-                .ratio(0.0);
-            frame.render_widget(gauge, chunks[3]);
-
-            render_hints(frame, chunks[5], state);
-            return;
-        }
+        AppState::ConfirmQuit { .. } => unreachable!("ConfirmQuit is handled by render as a popup"),
         AppState::Done(path) => {
             let text = format!("✓ Done: {}", path.display());
             // Render directly since we need owned string
@@ -259,9 +233,9 @@ fn render_hints(frame: &mut Frame, area: ratatui::layout::Rect, state: &AppState
             ("r", " New Recording  "),
             ("q", " Quit"),
         ],
-        // ConfirmQuit is rendered as an overlay; render_main is only called
-        // with the prior state, so this arm is unreachable.
-        AppState::ConfirmQuit { .. } => &[],
+        AppState::ConfirmQuit { .. } => {
+            unreachable!("ConfirmQuit is handled by render as a popup")
+        }
     };
     let line = if hints.is_empty() {
         let placeholder = match state {
