@@ -150,33 +150,26 @@ impl App {
     }
 
     pub fn tick(&mut self) {
-        // Called each TUI frame to update dynamic state
-        // peak_level is read directly via atomic, no action needed here
-        if let Some(handle) = self.upload_thread.as_ref()
-            && handle.is_finished()
-            && let Some(handle) = self.upload_thread.take()
-        {
-            let AppState::Uploading(path) = self.state.clone() else {
-                return;
-            };
-            match handle.join() {
-                Ok(Ok(episode_id)) => {
-                    self.state = AppState::Uploaded { path, episode_id };
-                }
-                Ok(Err(e)) => {
-                    self.state = AppState::UploadFailed {
-                        path,
-                        error: e.to_string(),
-                    };
-                }
-                Err(_) => {
-                    self.state = AppState::UploadFailed {
-                        path,
-                        error: "upload thread panicked".to_string(),
-                    };
-                }
-            }
+        // Called each TUI frame to update dynamic state.
+        // peak_level is read directly via atomic, no action needed here.
+        if !self.upload_thread.as_ref().is_some_and(|h| h.is_finished()) {
+            return;
         }
+        let handle = self.upload_thread.take().expect("just checked Some");
+        let AppState::Uploading(path) = std::mem::replace(&mut self.state, AppState::Idle) else {
+            return;
+        };
+        self.state = match handle.join() {
+            Ok(Ok(episode_id)) => AppState::Uploaded { path, episode_id },
+            Ok(Err(e)) => AppState::UploadFailed {
+                path,
+                error: e.to_string(),
+            },
+            Err(_) => AppState::UploadFailed {
+                path,
+                error: "upload thread panicked".to_string(),
+            },
+        };
     }
 }
 

@@ -102,10 +102,8 @@ impl ListenClient {
             return Err(anyhow!("graphql http {}: {}", status, body));
         }
         let json: Value = resp.json().context("decode graphql response")?;
-        if let Some(errors) = json.get("errors")
-            && !errors.as_array().map(|a| a.is_empty()).unwrap_or(true)
-        {
-            return Err(anyhow!("graphql errors: {}", errors));
+        if let Some(errors) = json.get("errors").filter(|e| !is_empty_errors(e)) {
+            return Err(anyhow!("graphql errors: {errors}"));
         }
         json.get("data")
             .cloned()
@@ -214,6 +212,12 @@ impl ListenClient {
     }
 }
 
+/// Treat an absent/null/empty-array `errors` value as "no errors"; any
+/// non-empty or non-array payload is surfaced to the caller.
+fn is_empty_errors(errors: &Value) -> bool {
+    errors.is_null() || errors.as_array().is_some_and(|a| a.is_empty())
+}
+
 fn string_field(value: &Value, key: &str) -> anyhow::Result<String> {
     value
         .get(key)
@@ -225,6 +229,7 @@ fn string_field(value: &Value, key: &str) -> anyhow::Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::ListenConfig;
 
     #[test]
     fn visibility_enum_serializes_as_expected() {
@@ -320,7 +325,7 @@ mod tests {
             return;
         };
 
-        let client = ListenClient::new(ListenConfigEndpoint::default().0, token).unwrap();
+        let client = ListenClient::new(ListenConfig::DEFAULT_ENDPOINT, token).unwrap();
         let path = std::path::PathBuf::from(&mp3_path);
         let title = format!(
             "radi-e2e-test {}",
@@ -341,11 +346,37 @@ mod tests {
         assert!(!episode.id.is_empty());
     }
 
-    struct ListenConfigEndpoint(String);
-    impl Default for ListenConfigEndpoint {
-        fn default() -> Self {
-            Self("https://listen.style/graphql".into())
-        }
+    #[test]
+    fn graphql_errors_non_array_is_surfaced() {
+        let mut server = mockito::Server::new();
+        let _m = server
+            .mock("POST", "/graphql")
+            .with_status(200)
+            .with_body(r#"{"errors":{"message":"boom"}}"#)
+            .create();
+
+        let client = ListenClient::new(format!("{}/graphql", server.url()), "t").unwrap();
+        let err = client
+            .create_presigned_upload("foo.mp3", "audio/mpeg")
+            .unwrap_err();
+        assert!(err.to_string().contains("boom"), "got: {err}");
+    }
+
+    #[test]
+    fn graphql_empty_errors_array_is_ignored() {
+        let mut server = mockito::Server::new();
+        let _m = server
+            .mock("POST", "/graphql")
+            .with_status(200)
+            .with_body(
+                r#"{"errors":[],"data":{"createPresignedUploadUrl":{"uploadUrl":"u","path":"p","publicUrl":"pu"}}}"#,
+            )
+            .create();
+
+        let client = ListenClient::new(format!("{}/graphql", server.url()), "t").unwrap();
+        client
+            .create_presigned_upload("foo.mp3", "audio/mpeg")
+            .expect("empty errors array should not fail");
     }
 
     #[test]

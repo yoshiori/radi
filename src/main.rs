@@ -58,12 +58,16 @@ fn run_app(
                     app.stop_recording()?;
                 }
                 KeyCode::Char('u') => {
-                    if let AppState::UploadFailed { path, .. } = app.state.clone() {
-                        app.state = AppState::Done(path);
-                    }
-                    if let AppState::Done(path) = app.state.clone() {
+                    let path = match &app.state {
+                        AppState::Done(p) | AppState::UploadFailed { path: p, .. } => {
+                            Some(p.clone())
+                        }
+                        _ => None,
+                    };
+                    if let Some(path) = path {
                         match listen.as_ref() {
                             Some(listen) => {
+                                app.state = AppState::Done(path);
                                 let title = app
                                     .output_path
                                     .file_stem()

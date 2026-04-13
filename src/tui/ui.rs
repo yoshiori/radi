@@ -48,11 +48,21 @@ pub fn render(frame: &mut Frame, app: &App) {
             .block(Block::default().borders(Borders::ALL).title("Status"));
             frame.render_widget(status, chunks[2]);
 
+            // The blocking HTTP client gives no byte-level progress, so use a
+            // time-based spinner label over a full-width gauge rather than a
+            // fake percentage that would look stuck.
+            let spinner_frames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+            let frame_index = (std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_millis())
+                .unwrap_or(0)
+                / 100) as usize
+                % spinner_frames.len();
             let gauge = Gauge::default()
                 .block(Block::default().borders(Borders::ALL).title("Upload"))
                 .gauge_style(Style::default().fg(Color::Cyan))
-                .label("in flight")
-                .ratio(0.5);
+                .label(format!("{} uploading", spinner_frames[frame_index]))
+                .ratio(1.0);
             frame.render_widget(gauge, chunks[3]);
 
             render_hints(frame, chunks[5], &app.state);
