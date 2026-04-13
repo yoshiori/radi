@@ -169,13 +169,13 @@ pub fn render(frame: &mut Frame, app: &App) {
 
 fn render_hints(frame: &mut Frame, area: ratatui::layout::Rect, state: &AppState) {
     let hints = match state {
-        AppState::Idle => "[R] Record  [Q] Quit",
-        AppState::Recording => "[S] Stop & Save  [Q] Stop & Quit",
+        AppState::Idle => "[r] Record  [q] Quit",
+        AppState::Recording => "[s] Stop & Save  [q] Stop & Quit",
         AppState::Processing => "Processing...",
-        AppState::Done(_) => "[U] Upload to LISTEN  [R] New Recording  [Q] Quit",
+        AppState::Done(_) => "[u] Upload to LISTEN  [r] New Recording  [q] Quit",
         AppState::Uploading(_) => "Uploading...",
-        AppState::Uploaded { .. } => "[R] New Recording  [Q] Quit",
-        AppState::UploadFailed { .. } => "[U] Retry Upload  [R] New Recording  [Q] Quit",
+        AppState::Uploaded { .. } => "[r] New Recording  [q] Quit",
+        AppState::UploadFailed { .. } => "[u] Retry Upload  [r] New Recording  [q] Quit",
     };
     let paragraph = Paragraph::new(hints)
         .style(Style::default().fg(Color::DarkGray))
