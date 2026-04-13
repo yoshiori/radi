@@ -416,15 +416,6 @@ fn render_recent(frame: &mut Frame, area: Rect, app: &App, accent: Color) {
 
 fn format_recent_line(rec: &RecentRecording, is_current: bool) -> Line<'_> {
     let name = rec.path.file_name().and_then(|s| s.to_str()).unwrap_or("?");
-    let size = format_size(rec.size_bytes);
-    let when = rec
-        .modified
-        .map(|m| {
-            let dt: chrono::DateTime<chrono::Local> = m.into();
-            dt.format("%m-%d %H:%M").to_string()
-        })
-        .unwrap_or_else(|| "—".to_string());
-
     let marker = if is_current { "▸ " } else { "  " };
     let marker_style = if is_current {
         Style::default().fg(REC).add_modifier(Modifier::BOLD)
@@ -441,26 +432,16 @@ fn format_recent_line(rec: &RecentRecording, is_current: bool) -> Line<'_> {
 
     Line::from(vec![
         Span::styled(marker, marker_style),
-        Span::styled(format!("{when:<12}"), Style::default().fg(ACCENT_DIM)),
-        Span::styled(format!("{size:>9}  "), Style::default().fg(ACCENT_DIM)),
+        Span::styled(
+            format!("{:<12}", rec.timestamp),
+            Style::default().fg(ACCENT_DIM),
+        ),
+        Span::styled(
+            format!("{:>9}  ", rec.size),
+            Style::default().fg(ACCENT_DIM),
+        ),
         Span::styled(name.to_string(), name_style),
     ])
-}
-
-fn format_size(bytes: u64) -> String {
-    const KB: f64 = 1024.0;
-    const MB: f64 = KB * 1024.0;
-    const GB: f64 = MB * 1024.0;
-    let b = bytes as f64;
-    if b >= GB {
-        format!("{:.2} GB", b / GB)
-    } else if b >= MB {
-        format!("{:.1} MB", b / MB)
-    } else if b >= KB {
-        format!("{:.0} KB", b / KB)
-    } else {
-        format!("{bytes} B")
-    }
 }
 
 fn render_hints(frame: &mut Frame, area: Rect, state: &AppState, accent: Color) {

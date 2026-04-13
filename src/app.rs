@@ -1,7 +1,8 @@
 use std::collections::VecDeque;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
+use std::thread::JoinHandle;
 use std::time::{Duration, Instant, SystemTime};
 
 /// Number of peak-level samples retained for the sparkline waveform.
@@ -14,11 +15,13 @@ pub const MAX_RECENT_RECORDINGS: usize = 16;
 /// Throttle interval for rescanning the output directory.
 const RECENT_REFRESH_INTERVAL: Duration = Duration::from_millis(750);
 
+/// One row in the "Recent" panel. Display strings are pre-formatted on the
+/// scan thread so the render loop (100ms tick) stays allocation-free.
 #[derive(Debug, Clone)]
 pub struct RecentRecording {
     pub path: PathBuf,
-    pub size_bytes: u64,
-    pub modified: Option<SystemTime>,
+    pub size: String,
+    pub timestamp: String,
 }
 
 use crate::audio::denoiser::Denoiser;
@@ -54,6 +57,7 @@ pub struct App {
     peak_history: VecDeque<f32>,
     recent: Vec<RecentRecording>,
     recent_last_refresh: Option<Instant>,
+    recent_thread: Option<JoinHandle<Vec<RecentRecording>>>,
 }
 
 impl App {
@@ -76,8 +80,9 @@ impl App {
             peak_history: VecDeque::with_capacity(PEAK_HISTORY_CAPACITY),
             recent: Vec::new(),
             recent_last_refresh: None,
+            recent_thread: None,
         };
-        app.refresh_recent();
+        app.spawn_recent_scan();
         app
     }
 
@@ -85,38 +90,28 @@ impl App {
         &self.recent
     }
 
-    /// Rescans `output_dir` for existing mp3s. Cheap for the tens of files a
-    /// user realistically accumulates; throttled from `tick` so a full loop
-    /// doesn't hammer the filesystem.
-    fn refresh_recent(&mut self) {
-        self.recent_last_refresh = Some(Instant::now());
-        let Ok(entries) = std::fs::read_dir(&self.output_dir) else {
-            self.recent.clear();
+    /// Spawns a background scan of `output_dir`. Kept off the TUI thread so a
+    /// slow filesystem (network mount, spinning disk) can't stall rendering.
+    fn spawn_recent_scan(&mut self) {
+        if self.recent_thread.is_some() {
             return;
-        };
-        let mut list: Vec<RecentRecording> = entries
-            .flatten()
-            .filter_map(|e| {
-                let path = e.path();
-                if path.extension().and_then(|s| s.to_str()) != Some("mp3") {
-                    return None;
-                }
-                let meta = e.metadata().ok()?;
-                Some(RecentRecording {
-                    path,
-                    size_bytes: meta.len(),
-                    modified: meta.modified().ok(),
-                })
-            })
-            .collect();
-        // Newest first; fall back to path ordering when mtime is unavailable
-        // (e.g. odd filesystems) so the list stays deterministic.
-        list.sort_by(|a, b| match (b.modified, a.modified) {
-            (Some(x), Some(y)) => x.cmp(&y),
-            _ => b.path.cmp(&a.path),
-        });
-        list.truncate(MAX_RECENT_RECORDINGS);
-        self.recent = list;
+        }
+        self.recent_last_refresh = Some(Instant::now());
+        let dir = self.output_dir.clone();
+        self.recent_thread = Some(std::thread::spawn(move || scan_recent(&dir)));
+    }
+
+    /// Polls the in-flight scan; installs its result if ready. No-op when
+    /// nothing is pending.
+    fn poll_recent(&mut self) {
+        if !self.recent_thread.as_ref().is_some_and(|h| h.is_finished()) {
+            return;
+        }
+        if let Some(handle) = self.recent_thread.take()
+            && let Ok(list) = handle.join()
+        {
+            self.recent = list;
+        }
     }
 
     pub fn elapsed(&self) -> Duration {
@@ -231,11 +226,13 @@ impl App {
         }
         self.peak_history.push_back(self.peak());
 
-        if self
-            .recent_last_refresh
-            .is_none_or(|t| t.elapsed() >= RECENT_REFRESH_INTERVAL)
+        self.poll_recent();
+        if self.recent_thread.is_none()
+            && self
+                .recent_last_refresh
+                .is_none_or(|t| t.elapsed() >= RECENT_REFRESH_INTERVAL)
         {
-            self.refresh_recent();
+            self.spawn_recent_scan();
         }
 
         if !self.upload_thread.as_ref().is_some_and(|h| h.is_finished()) {
@@ -269,6 +266,61 @@ impl App {
             },
             _ => resolved,
         };
+    }
+}
+
+/// Scan `dir` for mp3 recordings, newest first, capped to
+/// `MAX_RECENT_RECORDINGS`. Timestamp and size strings are formatted here so
+/// the render loop never has to touch the timezone database or allocate.
+fn scan_recent(dir: &Path) -> Vec<RecentRecording> {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return Vec::new();
+    };
+    let mut list: Vec<(Option<SystemTime>, RecentRecording)> = entries
+        .flatten()
+        .filter_map(|e| {
+            let path = e.path();
+            if path.extension().and_then(|s| s.to_str()) != Some("mp3") {
+                return None;
+            }
+            let meta = e.metadata().ok()?;
+            let modified = meta.modified().ok();
+            let timestamp = modified
+                .map(|m| {
+                    let dt: chrono::DateTime<chrono::Local> = m.into();
+                    dt.format("%m-%d %H:%M").to_string()
+                })
+                .unwrap_or_else(|| "—".to_string());
+            Some((
+                modified,
+                RecentRecording {
+                    path,
+                    size: format_size(meta.len()),
+                    timestamp,
+                },
+            ))
+        })
+        .collect();
+    // `Option::cmp` puts `None` before `Some`, so sorting descending naturally
+    // groups timestamped files first with the newest on top; path breaks ties.
+    list.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| b.1.path.cmp(&a.1.path)));
+    list.truncate(MAX_RECENT_RECORDINGS);
+    list.into_iter().map(|(_, r)| r).collect()
+}
+
+fn format_size(bytes: u64) -> String {
+    const KB: f64 = 1024.0;
+    const MB: f64 = KB * 1024.0;
+    const GB: f64 = MB * 1024.0;
+    let b = bytes as f64;
+    if b >= GB {
+        format!("{:.2} GB", b / GB)
+    } else if b >= MB {
+        format!("{:.1} MB", b / MB)
+    } else if b >= KB {
+        format!("{:.0} KB", b / KB)
+    } else {
+        format!("{bytes} B")
     }
 }
 
