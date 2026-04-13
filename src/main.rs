@@ -44,6 +44,22 @@ fn run_app(
                 continue;
             }
             match key.code {
+                KeyCode::Char(c @ ('y' | 'n'))
+                    if matches!(app.state, AppState::ConfirmQuit { .. }) =>
+                {
+                    if let AppState::ConfirmQuit { previous } =
+                        std::mem::replace(&mut app.state, AppState::Idle)
+                    {
+                        app.state = *previous;
+                    }
+                    if c == 'y' {
+                        if app.state == AppState::Recording {
+                            app.stop_recording()?;
+                        }
+                        app.should_quit = true;
+                    }
+                }
+                _ if matches!(app.state, AppState::ConfirmQuit { .. }) => {}
                 KeyCode::Char('r') => match app.state {
                     AppState::Idle => app.start_recording()?,
                     AppState::Done(_)
@@ -56,6 +72,13 @@ fn run_app(
                 },
                 KeyCode::Char('s') if app.state == AppState::Recording => {
                     app.stop_recording()?;
+                }
+                KeyCode::Char('o') => {
+                    if let AppState::Uploaded { webview_url, .. } = &app.state {
+                        // Failures here are non-fatal: the URL is still shown
+                        // on screen for the user to copy manually.
+                        let _ = open::that_detached(webview_url);
+                    }
                 }
                 KeyCode::Char('u') => {
                     let path = match &app.state {
@@ -86,10 +109,10 @@ fn run_app(
                     }
                 }
                 KeyCode::Char('q') => {
-                    if app.state == AppState::Recording {
-                        app.stop_recording()?;
-                    }
-                    app.should_quit = true;
+                    let previous = std::mem::replace(&mut app.state, AppState::Idle);
+                    app.state = AppState::ConfirmQuit {
+                        previous: Box::new(previous),
+                    };
                 }
                 _ => {}
             }

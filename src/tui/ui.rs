@@ -1,12 +1,56 @@
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout};
-use ratatui::style::{Color, Style, Stylize};
-use ratatui::text::{Line, Span};
+use ratatui::style::{Color, Modifier, Style};
+use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Block, Borders, Gauge, Paragraph};
+use tui_popup::Popup;
 
 use crate::app::{App, AppState};
 
 pub fn render(frame: &mut Frame, app: &App) {
+    // For ConfirmQuit, render the underlying state as a dimmed backdrop
+    // and overlay the confirmation popup on top.
+    if let AppState::ConfirmQuit { previous } = &app.state {
+        render_main(frame, app, previous);
+        render_quit_popup(frame, previous);
+        return;
+    }
+    render_main(frame, app, &app.state);
+}
+
+fn render_quit_popup(frame: &mut Frame, previous: &AppState) {
+    let question = if matches!(previous, AppState::Recording) {
+        "Stop recording and quit?"
+    } else {
+        "Quit radi?"
+    };
+    let body = Text::from(vec![
+        Line::from(question),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled(
+                "[y]",
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::raw(" Yes    "),
+            Span::styled(
+                "[n]",
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::raw(" Cancel"),
+        ]),
+    ]);
+    let popup = Popup::new(body)
+        .title(" Confirm ")
+        .style(Style::new().fg(Color::White).bg(Color::Black));
+    frame.render_widget(&popup, frame.area());
+}
+
+fn render_main(frame: &mut Frame, app: &App, state: &AppState) {
     let chunks = Layout::vertical([
         Constraint::Length(3), // title
         Constraint::Length(1), // device info
@@ -19,7 +63,11 @@ pub fn render(frame: &mut Frame, app: &App) {
 
     // Title
     let title = Paragraph::new("radi - Podcast Recorder")
-        .style(Style::default().fg(Color::Cyan).bold())
+        .style(
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        )
         .block(Block::default().borders(Borders::BOTTOM));
     frame.render_widget(title, chunks[0]);
 
@@ -32,7 +80,7 @@ pub fn render(frame: &mut Frame, app: &App) {
     frame.render_widget(device_info, chunks[1]);
 
     // Status
-    let (state_text, state_color) = match &app.state {
+    let (state_text, state_color) = match state {
         AppState::Idle => ("■ Idle", Color::Gray),
         AppState::Recording => ("● Recording", Color::Red),
         AppState::Processing => ("◌ Processing...", Color::Yellow),
@@ -65,18 +113,18 @@ pub fn render(frame: &mut Frame, app: &App) {
                 .ratio(1.0);
             frame.render_widget(gauge, chunks[3]);
 
-            render_hints(frame, chunks[5], &app.state);
+            render_hints(frame, chunks[5], state);
             return;
         }
-        AppState::Uploaded { path, episode_id } => {
+        AppState::Uploaded { path, webview_url } => {
             let status = Paragraph::new(vec![
                 Line::from(Span::styled(
                     "✓ Uploaded",
                     Style::default().fg(Color::Green),
                 )),
                 Line::from(""),
-                Line::from(format!("  Episode: {episode_id}")),
-                Line::from(format!("  File:    {}", path.display())),
+                Line::from(format!("  URL:  {webview_url}")),
+                Line::from(format!("  File: {}", path.display())),
             ])
             .block(Block::default().borders(Borders::ALL).title("Status"));
             frame.render_widget(status, chunks[2]);
@@ -87,7 +135,7 @@ pub fn render(frame: &mut Frame, app: &App) {
                 .ratio(1.0);
             frame.render_widget(gauge, chunks[3]);
 
-            render_hints(frame, chunks[5], &app.state);
+            render_hints(frame, chunks[5], state);
             return;
         }
         AppState::UploadFailed { path, error } => {
@@ -109,9 +157,10 @@ pub fn render(frame: &mut Frame, app: &App) {
                 .ratio(0.0);
             frame.render_widget(gauge, chunks[3]);
 
-            render_hints(frame, chunks[5], &app.state);
+            render_hints(frame, chunks[5], state);
             return;
         }
+        AppState::ConfirmQuit { .. } => unreachable!("ConfirmQuit is handled by render as a popup"),
         AppState::Done(path) => {
             let text = format!("✓ Done: {}", path.display());
             // Render directly since we need owned string
@@ -133,7 +182,7 @@ pub fn render(frame: &mut Frame, app: &App) {
             frame.render_widget(gauge, chunks[3]);
 
             // Key hints
-            render_hints(frame, chunks[5], &app.state);
+            render_hints(frame, chunks[5], state);
             return;
         }
     };
@@ -164,22 +213,59 @@ pub fn render(frame: &mut Frame, app: &App) {
     frame.render_widget(gauge, chunks[3]);
 
     // Key hints
-    render_hints(frame, chunks[5], &app.state);
+    render_hints(frame, chunks[5], state);
 }
 
 fn render_hints(frame: &mut Frame, area: ratatui::layout::Rect, state: &AppState) {
-    let hints = match state {
-        AppState::Idle => "[R] Record  [Q] Quit",
-        AppState::Recording => "[S] Stop & Save  [Q] Stop & Quit",
-        AppState::Processing => "Processing...",
-        AppState::Done(_) => "[U] Upload to LISTEN  [R] New Recording  [Q] Quit",
-        AppState::Uploading(_) => "Uploading...",
-        AppState::Uploaded { .. } => "[R] New Recording  [Q] Quit",
-        AppState::UploadFailed { .. } => "[U] Retry Upload  [R] New Recording  [Q] Quit",
+    let hints: &[(&str, &str)] = match state {
+        AppState::Idle => &[("r", " Record  "), ("q", " Quit")],
+        AppState::Recording => &[("s", " Stop & Save  "), ("q", " Stop & Quit")],
+        AppState::Processing => &[],
+        AppState::Done(_) => &[
+            ("u", " Upload to LISTEN  "),
+            ("r", " New Recording  "),
+            ("q", " Quit"),
+        ],
+        AppState::Uploading(_) => &[],
+        AppState::Uploaded { .. } => &[
+            ("o", " Open in browser  "),
+            ("r", " New Recording  "),
+            ("q", " Quit"),
+        ],
+        AppState::UploadFailed { .. } => &[
+            ("u", " Retry Upload  "),
+            ("r", " New Recording  "),
+            ("q", " Quit"),
+        ],
+        AppState::ConfirmQuit { .. } => {
+            unreachable!("ConfirmQuit is handled by render as a popup")
+        }
     };
-    let paragraph = Paragraph::new(hints)
-        .style(Style::default().fg(Color::DarkGray))
-        .block(Block::default().borders(Borders::TOP));
+    let line = if hints.is_empty() {
+        let placeholder = match state {
+            AppState::Processing => "Processing...",
+            AppState::Uploading(_) => "Uploading...",
+            _ => "",
+        };
+        Line::from(Span::styled(
+            placeholder,
+            Style::default().fg(Color::DarkGray),
+        ))
+    } else {
+        let key_style = Style::default()
+            .fg(Color::Yellow)
+            .add_modifier(Modifier::BOLD);
+        let label_style = Style::default().fg(Color::DarkGray);
+        let mut spans = Vec::with_capacity(hints.len() * 4);
+        for (key, label) in hints {
+            spans.push(Span::styled("[", label_style));
+            spans.push(Span::styled(*key, key_style));
+            spans.push(Span::styled("]", label_style));
+            spans.push(Span::styled(*label, label_style));
+        }
+        Line::from(spans)
+    };
+    let paragraph = Paragraph::new(line).block(Block::default().borders(Borders::TOP));
     frame.render_widget(paragraph, area);
 }
 

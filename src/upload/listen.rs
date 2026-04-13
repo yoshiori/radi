@@ -26,6 +26,7 @@ mutation($podcastId: ID!, $title: String!, $description: String,
   createEpisode(podcastId: $podcastId, title: $title, description: $description,
                 visibility: $visibility, audioPath: $audioPath, status: $status) {
     id
+    webviewUrl
   }
 }
 "#;
@@ -66,6 +67,7 @@ pub struct PresignedUpload {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UploadedEpisode {
     pub id: String,
+    pub webview_url: String,
 }
 
 pub struct ListenClient {
@@ -181,6 +183,7 @@ impl ListenClient {
             .ok_or_else(|| anyhow!("response missing createEpisode"))?;
         Ok(UploadedEpisode {
             id: string_field(node, "id")?,
+            webview_url: string_field(node, "webviewUrl")?,
         })
     }
 
@@ -342,8 +345,9 @@ mod tests {
             )
             .expect("upload_episode succeeds");
 
-        eprintln!("created episode id: {}", episode.id);
+        eprintln!("created episode url: {}", episode.webview_url);
         assert!(!episode.id.is_empty());
+        assert!(!episode.webview_url.is_empty());
     }
 
     #[test]
@@ -389,7 +393,9 @@ mod tests {
                     .into(),
             ))
             .with_status(200)
-            .with_body(r#"{"data":{"createEpisode":{"id":"ep123"}}}"#)
+            .with_body(
+                r#"{"data":{"createEpisode":{"id":"ep123","webviewUrl":"https://listen.style/p/pod/ep123"}}}"#,
+            )
             .create();
 
         let client = ListenClient::new(format!("{}/graphql", server.url()), "t").unwrap();

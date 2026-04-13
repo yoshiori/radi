@@ -7,7 +7,7 @@ description = "A TUI podcast recorder with ML noise suppression"
 repository = "https://github.com/yoshiori/radi"
 
 [dependencies]
-ratatui = "0.29"
+ratatui = "0.30"
 crossterm = "0.28"
 cpal = "0.15"
 mp3lame-encoder = "0.2"
@@ -20,6 +20,8 @@ toml = "0.8"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
+tui-popup = "0.7"
+open = "5.3.3"
 
 [dev-dependencies]
 mockito = "1"

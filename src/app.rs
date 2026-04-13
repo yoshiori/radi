@@ -16,8 +16,9 @@ pub enum AppState {
     Processing,
     Done(PathBuf),
     Uploading(PathBuf),
-    Uploaded { path: PathBuf, episode_id: String },
+    Uploaded { path: PathBuf, webview_url: String },
     UploadFailed { path: PathBuf, error: String },
+    ConfirmQuit { previous: Box<AppState> },
 }
 
 pub struct App {
@@ -141,7 +142,7 @@ impl App {
                 Visibility::Public,
                 EpisodeStatus::Draft,
             )?;
-            Ok(episode.id)
+            Ok(episode.webview_url)
         });
 
         self.upload_thread = Some(handle);
@@ -155,12 +156,19 @@ impl App {
         if !self.upload_thread.as_ref().is_some_and(|h| h.is_finished()) {
             return;
         }
-        let handle = self.upload_thread.take().expect("just checked Some");
-        let AppState::Uploading(path) = std::mem::replace(&mut self.state, AppState::Idle) else {
-            return;
+        // The upload may be nested under ConfirmQuit when the user opened the
+        // quit prompt mid-upload; resolve either shape without clobbering it.
+        let path = match &self.state {
+            AppState::Uploading(p) => p.clone(),
+            AppState::ConfirmQuit { previous } => match previous.as_ref() {
+                AppState::Uploading(p) => p.clone(),
+                _ => return,
+            },
+            _ => return,
         };
-        self.state = match handle.join() {
-            Ok(Ok(episode_id)) => AppState::Uploaded { path, episode_id },
+        let handle = self.upload_thread.take().expect("just checked Some");
+        let resolved = match handle.join() {
+            Ok(Ok(webview_url)) => AppState::Uploaded { path, webview_url },
             Ok(Err(e)) => AppState::UploadFailed {
                 path,
                 error: e.to_string(),
@@ -169,6 +177,12 @@ impl App {
                 path,
                 error: "upload thread panicked".to_string(),
             },
+        };
+        self.state = match std::mem::replace(&mut self.state, AppState::Idle) {
+            AppState::ConfirmQuit { .. } => AppState::ConfirmQuit {
+                previous: Box::new(resolved),
+            },
+            _ => resolved,
         };
     }
 }
