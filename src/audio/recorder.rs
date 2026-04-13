@@ -71,7 +71,10 @@ fn wpctl_default_source_name() -> Option<String> {
 
 fn parse_wpctl_description(stdout: &str) -> Option<String> {
     for line in stdout.lines() {
-        let trimmed = line.trim();
+        // wpctl prefixes "currently active" fields with "* ", e.g.
+        //   "  * node.description = \"…\""
+        // so strip leading whitespace plus an optional "* " marker.
+        let trimmed = line.trim_start().trim_start_matches("* ");
         if let Some(value) = trimmed.strip_prefix("node.description = ") {
             return Some(value.trim_matches('"').to_string());
         }
@@ -89,6 +92,15 @@ mod tests {
         assert_eq!(
             parse_wpctl_description(input),
             Some("Built-in Audio Analog Stereo".to_string())
+        );
+    }
+
+    #[test]
+    fn test_parse_wpctl_description_with_active_marker() {
+        let input = "id 92, type PipeWire:Interface:Node\n  * node.description = \"ATR2100x-USB Microphone\"\n  * node.nick = \"ATR2100x\"";
+        assert_eq!(
+            parse_wpctl_description(input),
+            Some("ATR2100x-USB Microphone".to_string())
         );
     }
 
