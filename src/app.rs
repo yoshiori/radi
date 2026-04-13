@@ -1,7 +1,12 @@
+use std::collections::VecDeque;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::{Duration, Instant};
+
+/// Number of peak-level samples retained for the sparkline waveform.
+/// At the ~100ms UI tick this covers roughly the last 12 seconds.
+pub const PEAK_HISTORY_CAPACITY: usize = 120;
 
 use crate::audio::denoiser::Denoiser;
 use crate::audio::encoder::Mp3Writer;
@@ -32,6 +37,7 @@ pub struct App {
     recorder: Option<Recorder>,
     encode_thread: Option<std::thread::JoinHandle<anyhow::Result<()>>>,
     upload_thread: Option<std::thread::JoinHandle<anyhow::Result<String>>>,
+    peak_history: VecDeque<f32>,
 }
 
 impl App {
@@ -49,6 +55,7 @@ impl App {
             recorder: None,
             encode_thread: None,
             upload_thread: None,
+            peak_history: VecDeque::with_capacity(PEAK_HISTORY_CAPACITY),
         }
     }
 
@@ -61,6 +68,10 @@ impl App {
 
     pub fn peak(&self) -> f32 {
         f32::from_bits(self.peak_level.load(Ordering::Relaxed))
+    }
+
+    pub fn peak_history(&self) -> &VecDeque<f32> {
+        &self.peak_history
     }
 
     pub fn start_recording(&mut self) -> anyhow::Result<()> {
@@ -152,7 +163,14 @@ impl App {
 
     pub fn tick(&mut self) {
         // Called each TUI frame to update dynamic state.
-        // peak_level is read directly via atomic, no action needed here.
+        // Sample the peak meter into a rolling history so the UI can render a
+        // waveform sparkline; only meaningful while recording, but keeping the
+        // last recording's tail around briefly is harmless.
+        if self.peak_history.len() == PEAK_HISTORY_CAPACITY {
+            self.peak_history.pop_front();
+        }
+        self.peak_history.push_back(self.peak());
+
         if !self.upload_thread.as_ref().is_some_and(|h| h.is_finished()) {
             return;
         }
