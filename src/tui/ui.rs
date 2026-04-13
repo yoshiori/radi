@@ -101,7 +101,7 @@ fn render_main(frame: &mut Frame, app: &App, state: &AppState) {
                 .ratio(1.0);
             frame.render_widget(gauge, chunks[3]);
 
-            render_hints(frame, chunks[5], &app.state);
+            render_hints(frame, chunks[5], state);
             return;
         }
         AppState::Uploaded { path, webview_url } => {
@@ -123,7 +123,7 @@ fn render_main(frame: &mut Frame, app: &App, state: &AppState) {
                 .ratio(1.0);
             frame.render_widget(gauge, chunks[3]);
 
-            render_hints(frame, chunks[5], &app.state);
+            render_hints(frame, chunks[5], state);
             return;
         }
         AppState::UploadFailed { path, error } => {
@@ -145,7 +145,7 @@ fn render_main(frame: &mut Frame, app: &App, state: &AppState) {
                 .ratio(0.0);
             frame.render_widget(gauge, chunks[3]);
 
-            render_hints(frame, chunks[5], &app.state);
+            render_hints(frame, chunks[5], state);
             return;
         }
         AppState::ConfirmQuit { previous } => {
@@ -172,7 +172,7 @@ fn render_main(frame: &mut Frame, app: &App, state: &AppState) {
                 .ratio(0.0);
             frame.render_widget(gauge, chunks[3]);
 
-            render_hints(frame, chunks[5], &app.state);
+            render_hints(frame, chunks[5], state);
             return;
         }
         AppState::Done(path) => {
@@ -196,7 +196,7 @@ fn render_main(frame: &mut Frame, app: &App, state: &AppState) {
             frame.render_widget(gauge, chunks[3]);
 
             // Key hints
-            render_hints(frame, chunks[5], &app.state);
+            render_hints(frame, chunks[5], state);
             return;
         }
     };
@@ -227,7 +227,7 @@ fn render_main(frame: &mut Frame, app: &App, state: &AppState) {
     frame.render_widget(gauge, chunks[3]);
 
     // Key hints
-    render_hints(frame, chunks[5], &app.state);
+    render_hints(frame, chunks[5], state);
 }
 
 fn render_hints(frame: &mut Frame, area: ratatui::layout::Rect, state: &AppState) {
@@ -239,7 +239,9 @@ fn render_hints(frame: &mut Frame, area: ratatui::layout::Rect, state: &AppState
         AppState::Uploading(_) => "Uploading...",
         AppState::Uploaded { .. } => "[r] New Recording  [q] Quit",
         AppState::UploadFailed { .. } => "[u] Retry Upload  [r] New Recording  [q] Quit",
-        AppState::ConfirmQuit { .. } => "[y] Yes, quit  [n] Cancel",
+        // ConfirmQuit is rendered as an overlay; render_main is only called
+        // with the prior state, so this arm is unreachable.
+        AppState::ConfirmQuit { .. } => "",
     };
     let paragraph = Paragraph::new(hints)
         .style(Style::default().fg(Color::DarkGray))
