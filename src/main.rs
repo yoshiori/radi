@@ -44,22 +44,19 @@ fn run_app(
                 continue;
             }
             match key.code {
-                KeyCode::Char('y') if matches!(app.state, AppState::ConfirmQuit { .. }) => {
+                KeyCode::Char(c @ ('y' | 'n'))
+                    if matches!(app.state, AppState::ConfirmQuit { .. }) =>
+                {
                     if let AppState::ConfirmQuit { previous } =
                         std::mem::replace(&mut app.state, AppState::Idle)
                     {
                         app.state = *previous;
                     }
-                    if app.state == AppState::Recording {
-                        app.stop_recording()?;
-                    }
-                    app.should_quit = true;
-                }
-                KeyCode::Char('n') if matches!(app.state, AppState::ConfirmQuit { .. }) => {
-                    if let AppState::ConfirmQuit { previous } =
-                        std::mem::replace(&mut app.state, AppState::Idle)
-                    {
-                        app.state = *previous;
+                    if c == 'y' {
+                        if app.state == AppState::Recording {
+                            app.stop_recording()?;
+                        }
+                        app.should_quit = true;
                     }
                 }
                 _ if matches!(app.state, AppState::ConfirmQuit { .. }) => {}
