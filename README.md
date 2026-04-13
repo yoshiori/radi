@@ -76,15 +76,15 @@ output_dir = "/home/you/Podcasts"
 
 [listen]
 podcast_id = "01xxxxxxxxxxxxxxxxxxxxxxxx"
-# Either inline the bearer token, reference a 1Password item, or leave it
-# blank and set LISTEN_API_TOKEN in the environment.
-api_token = "op://Private/Listen-api/credential"
+api_token = "your-listen-api-token"
 # endpoint = "https://listen.style/graphql"  # optional override
 ```
 
-If the file is missing or `output_dir` is unset, recordings are written to the
-current working directory. If the `[listen]` section is absent, pressing `u`
-reports the missing configuration instead of silently doing nothing.
+`api_token` can also be omitted and supplied via the `LISTEN_API_TOKEN`
+environment variable. If the file is missing or `output_dir` is unset,
+recordings are written to the current working directory. If the `[listen]`
+section is absent, pressing `u` reports the missing configuration instead of
+silently doing nothing.
 
 ### LISTEN upload
 
@@ -95,10 +95,11 @@ reports the missing configuration instead of silently doing nothing.
 3. `createEpisode` with the returned `path`, creating a **DRAFT** episode so
    you can review and publish it on the LISTEN web UI.
 
-You can obtain a token from the LISTEN web UI (user menu → **API Tokens**).
-Values of `api_token` that start with `op://` are resolved at runtime via the
-[1Password CLI](https://developer.1password.com/docs/cli/) (`op read`), so the
-secret does not need to live on disk.
+Get a token from the LISTEN web UI (user menu → **API Tokens**).
+
+`api_token` values prefixed with `op://` are also supported and resolved at
+runtime via the [1Password CLI](https://developer.1password.com/docs/cli/) if
+you prefer not to store the secret in plain text.
 
 ## Architecture
 
