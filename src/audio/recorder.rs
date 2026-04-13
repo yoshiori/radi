@@ -74,7 +74,7 @@ fn parse_wpctl_description(stdout: &str) -> Option<String> {
         // wpctl prefixes "currently active" fields with "* ", e.g.
         //   "  * node.description = \"…\""
         // so strip leading whitespace plus an optional "* " marker.
-        let trimmed = line.trim_start().trim_start_matches("* ");
+        let trimmed = line.trim().trim_start_matches("* ").trim();
         if let Some(value) = trimmed.strip_prefix("node.description = ") {
             return Some(value.trim_matches('"').to_string());
         }
