@@ -16,7 +16,7 @@ pub enum AppState {
     Processing,
     Done(PathBuf),
     Uploading(PathBuf),
-    Uploaded { path: PathBuf, episode_id: String },
+    Uploaded { path: PathBuf, webview_url: String },
     UploadFailed { path: PathBuf, error: String },
 }
 
@@ -141,7 +141,7 @@ impl App {
                 Visibility::Public,
                 EpisodeStatus::Draft,
             )?;
-            Ok(episode.id)
+            Ok(episode.webview_url)
         });
 
         self.upload_thread = Some(handle);
@@ -160,7 +160,7 @@ impl App {
             return;
         };
         self.state = match handle.join() {
-            Ok(Ok(episode_id)) => AppState::Uploaded { path, episode_id },
+            Ok(Ok(webview_url)) => AppState::Uploaded { path, webview_url },
             Ok(Err(e)) => AppState::UploadFailed {
                 path,
                 error: e.to_string(),

@@ -68,15 +68,15 @@ pub fn render(frame: &mut Frame, app: &App) {
             render_hints(frame, chunks[5], &app.state);
             return;
         }
-        AppState::Uploaded { path, episode_id } => {
+        AppState::Uploaded { path, webview_url } => {
             let status = Paragraph::new(vec![
                 Line::from(Span::styled(
                     "✓ Uploaded",
                     Style::default().fg(Color::Green),
                 )),
                 Line::from(""),
-                Line::from(format!("  Episode: {episode_id}")),
-                Line::from(format!("  File:    {}", path.display())),
+                Line::from(format!("  URL:  {webview_url}")),
+                Line::from(format!("  File: {}", path.display())),
             ])
             .block(Block::default().borders(Borders::ALL).title("Status"));
             frame.render_widget(status, chunks[2]);
