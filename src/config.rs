@@ -3,6 +3,54 @@ use std::path::PathBuf;
 #[derive(Debug, Default, serde::Deserialize, PartialEq)]
 pub struct Config {
     pub output_dir: Option<PathBuf>,
+    pub listen: Option<ListenConfig>,
+}
+
+#[derive(Debug, serde::Deserialize, PartialEq)]
+pub struct ListenConfig {
+    pub podcast_id: String,
+    #[serde(default)]
+    pub api_token: Option<String>,
+    #[serde(default)]
+    pub endpoint: Option<String>,
+}
+
+impl ListenConfig {
+    pub const DEFAULT_ENDPOINT: &'static str = "https://listen.style/graphql";
+
+    /// Token from config, falling back to the LISTEN_API_TOKEN env var.
+    ///
+    /// Values prefixed with `op://` are resolved via the 1Password CLI
+    /// (`op read <ref>`), so config.toml can reference a vault item without
+    /// storing the secret on disk.
+    pub fn resolved_token(&self) -> anyhow::Result<Option<String>> {
+        let raw = self
+            .api_token
+            .clone()
+            .or_else(|| std::env::var("LISTEN_API_TOKEN").ok());
+        match raw {
+            Some(ref s) if s.starts_with("op://") => Ok(Some(resolve_op_reference(s)?)),
+            other => Ok(other),
+        }
+    }
+
+    pub fn endpoint_or_default(&self) -> &str {
+        self.endpoint.as_deref().unwrap_or(Self::DEFAULT_ENDPOINT)
+    }
+}
+
+fn resolve_op_reference(reference: &str) -> anyhow::Result<String> {
+    let output = std::process::Command::new("op")
+        .args(["read", "--no-newline", reference])
+        .output()
+        .map_err(|e| {
+            anyhow::anyhow!("failed to invoke `op` (is the 1Password CLI installed?): {e}")
+        })?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        anyhow::bail!("`op read {reference}` failed: {}", stderr.trim());
+    }
+    Ok(String::from_utf8(output.stdout)?.trim().to_string())
 }
 
 impl Config {
@@ -69,7 +117,51 @@ mod tests {
     fn test_output_dir_or_default_with_some() {
         let config = Config {
             output_dir: Some(PathBuf::from("/tmp/out")),
+            listen: None,
         };
         assert_eq!(config.output_dir_or_default(), PathBuf::from("/tmp/out"));
+    }
+
+    #[test]
+    fn test_parse_listen_section() {
+        let config = parse(
+            r#"
+            [listen]
+            podcast_id = "pod123"
+            api_token = "tok"
+            endpoint = "https://example.test/graphql"
+            "#,
+        )
+        .unwrap();
+        let listen = config.listen.expect("listen section");
+        assert_eq!(listen.podcast_id, "pod123");
+        assert_eq!(listen.api_token.as_deref(), Some("tok"));
+        assert_eq!(
+            listen.endpoint.as_deref(),
+            Some("https://example.test/graphql")
+        );
+    }
+
+    #[test]
+    fn test_listen_endpoint_or_default() {
+        let listen = ListenConfig {
+            podcast_id: "p".into(),
+            api_token: None,
+            endpoint: None,
+        };
+        assert_eq!(listen.endpoint_or_default(), ListenConfig::DEFAULT_ENDPOINT);
+    }
+
+    #[test]
+    fn test_listen_resolved_token_prefers_config() {
+        let listen = ListenConfig {
+            podcast_id: "p".into(),
+            api_token: Some("from_config".into()),
+            endpoint: None,
+        };
+        assert_eq!(
+            listen.resolved_token().unwrap().as_deref(),
+            Some("from_config")
+        );
     }
 }

@@ -6,6 +6,8 @@ use std::time::{Duration, Instant};
 use crate::audio::denoiser::Denoiser;
 use crate::audio::encoder::Mp3Writer;
 use crate::audio::recorder::{self, Recorder};
+use crate::config::ListenConfig;
+use crate::upload::listen::{EpisodeStatus, ListenClient, Visibility};
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum AppState {
@@ -13,6 +15,9 @@ pub enum AppState {
     Recording,
     Processing,
     Done(PathBuf),
+    Uploading(PathBuf),
+    Uploaded { path: PathBuf, episode_id: String },
+    UploadFailed { path: PathBuf, error: String },
 }
 
 pub struct App {
@@ -25,6 +30,7 @@ pub struct App {
     final_elapsed: Duration,
     recorder: Option<Recorder>,
     encode_thread: Option<std::thread::JoinHandle<anyhow::Result<()>>>,
+    upload_thread: Option<std::thread::JoinHandle<anyhow::Result<String>>>,
 }
 
 impl App {
@@ -41,6 +47,7 @@ impl App {
             final_elapsed: Duration::ZERO,
             recorder: None,
             encode_thread: None,
+            upload_thread: None,
         }
     }
 
@@ -113,9 +120,56 @@ impl App {
         Ok(())
     }
 
+    pub fn start_upload(&mut self, listen: &ListenConfig, title: String) -> anyhow::Result<()> {
+        let AppState::Done(path) = self.state.clone() else {
+            return Ok(());
+        };
+        let token = listen
+            .resolved_token()?
+            .ok_or_else(|| anyhow::anyhow!("LISTEN API token not configured (set [listen].api_token in config.toml or LISTEN_API_TOKEN env var)"))?;
+        let endpoint = listen.endpoint_or_default().to_string();
+        let podcast_id = listen.podcast_id.clone();
+        let upload_path = path.clone();
+
+        let handle = std::thread::spawn(move || -> anyhow::Result<String> {
+            let client = ListenClient::new(endpoint, token)?;
+            let episode = client.upload_episode(
+                &podcast_id,
+                &title,
+                None,
+                &upload_path,
+                Visibility::Public,
+                EpisodeStatus::Draft,
+            )?;
+            Ok(episode.id)
+        });
+
+        self.upload_thread = Some(handle);
+        self.state = AppState::Uploading(path);
+        Ok(())
+    }
+
     pub fn tick(&mut self) {
-        // Called each TUI frame to update dynamic state
-        // peak_level is read directly via atomic, no action needed here
+        // Called each TUI frame to update dynamic state.
+        // peak_level is read directly via atomic, no action needed here.
+        if !self.upload_thread.as_ref().is_some_and(|h| h.is_finished()) {
+            return;
+        }
+        let handle = self.upload_thread.take().expect("just checked Some");
+        let AppState::Uploading(path) = std::mem::replace(&mut self.state, AppState::Idle) else {
+            return;
+        };
+        self.state = match handle.join() {
+            Ok(Ok(episode_id)) => AppState::Uploaded { path, episode_id },
+            Ok(Err(e)) => AppState::UploadFailed {
+                path,
+                error: e.to_string(),
+            },
+            Err(_) => AppState::UploadFailed {
+                path,
+                error: "upload thread panicked".to_string(),
+            },
+        };
     }
 }
 
