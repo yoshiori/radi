@@ -276,36 +276,44 @@ fn scan_recent(dir: &Path) -> Vec<RecentRecording> {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return Vec::new();
     };
-    let mut list: Vec<(Option<SystemTime>, RecentRecording)> = entries
+    // Collect just the sort keys and raw size first; defer timestamp/size
+    // string formatting until after truncation so only the ~16 surviving
+    // entries pay the allocation cost, even when the directory has thousands
+    // of files.
+    let mut list: Vec<(Option<SystemTime>, PathBuf, u64)> = entries
         .flatten()
         .filter_map(|e| {
             let path = e.path();
-            if path.extension().and_then(|s| s.to_str()) != Some("mp3") {
+            let is_mp3 = path
+                .extension()
+                .and_then(|s| s.to_str())
+                .is_some_and(|s| s.eq_ignore_ascii_case("mp3"));
+            if !is_mp3 {
                 return None;
             }
             let meta = e.metadata().ok()?;
-            let modified = meta.modified().ok();
+            Some((meta.modified().ok(), path, meta.len()))
+        })
+        .collect();
+    // `Option::cmp` puts `None` before `Some`, so sorting descending naturally
+    // groups timestamped files first with the newest on top; path breaks ties.
+    list.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| b.1.cmp(&a.1)));
+    list.truncate(MAX_RECENT_RECORDINGS);
+    list.into_iter()
+        .map(|(modified, path, size_bytes)| {
             let timestamp = modified
                 .map(|m| {
                     let dt: chrono::DateTime<chrono::Local> = m.into();
                     dt.format("%m-%d %H:%M").to_string()
                 })
                 .unwrap_or_else(|| "—".to_string());
-            Some((
-                modified,
-                RecentRecording {
-                    path,
-                    size: format_size(meta.len()),
-                    timestamp,
-                },
-            ))
+            RecentRecording {
+                path,
+                size: format_size(size_bytes),
+                timestamp,
+            }
         })
-        .collect();
-    // `Option::cmp` puts `None` before `Some`, so sorting descending naturally
-    // groups timestamped files first with the newest on top; path breaks ties.
-    list.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| b.1.path.cmp(&a.1.path)));
-    list.truncate(MAX_RECENT_RECORDINGS);
-    list.into_iter().map(|(_, r)| r).collect()
+        .collect()
 }
 
 fn format_size(bytes: u64) -> String {
