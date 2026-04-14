@@ -1,7 +1,28 @@
-use std::path::PathBuf;
+use std::collections::VecDeque;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
-use std::time::{Duration, Instant};
+use std::thread::JoinHandle;
+use std::time::{Duration, Instant, SystemTime};
+
+/// Number of peak-level samples retained for the sparkline waveform.
+/// At the ~100ms UI tick this covers roughly the last 12 seconds.
+pub const PEAK_HISTORY_CAPACITY: usize = 120;
+
+/// How many previous recordings to surface in the TUI's "Recent" panel.
+pub const MAX_RECENT_RECORDINGS: usize = 16;
+
+/// Throttle interval for rescanning the output directory.
+const RECENT_REFRESH_INTERVAL: Duration = Duration::from_millis(750);
+
+/// One row in the "Recent" panel. Display strings are pre-formatted on the
+/// scan thread so the render loop (100ms tick) stays allocation-free.
+#[derive(Debug, Clone)]
+pub struct RecentRecording {
+    pub path: PathBuf,
+    pub size: String,
+    pub timestamp: String,
+}
 
 use crate::audio::denoiser::Denoiser;
 use crate::audio::encoder::Mp3Writer;
@@ -25,6 +46,7 @@ pub struct App {
     pub state: AppState,
     pub should_quit: bool,
     pub output_path: PathBuf,
+    pub output_dir: PathBuf,
     pub peak_level: Arc<AtomicU32>,
     pub device_name: Option<String>,
     recording_start: Option<Instant>,
@@ -32,16 +54,22 @@ pub struct App {
     recorder: Option<Recorder>,
     encode_thread: Option<std::thread::JoinHandle<anyhow::Result<()>>>,
     upload_thread: Option<std::thread::JoinHandle<anyhow::Result<String>>>,
+    peak_history: VecDeque<f32>,
+    recent: Vec<RecentRecording>,
+    recent_last_refresh: Option<Instant>,
+    recent_thread: Option<JoinHandle<Vec<RecentRecording>>>,
 }
 
 impl App {
     pub fn new(output_dir: PathBuf) -> Self {
         let timestamp = chrono::Local::now().format("%Y-%m-%d_%H-%M-%S");
         let device_name = recorder::default_input_device_name();
-        Self {
+        let output_path = output_dir.join(format!("recording_{timestamp}.mp3"));
+        let mut app = Self {
             state: AppState::Idle,
             should_quit: false,
-            output_path: output_dir.join(format!("recording_{timestamp}.mp3")),
+            output_path,
+            output_dir,
             peak_level: Arc::new(AtomicU32::new(0)),
             device_name,
             recording_start: None,
@@ -49,6 +77,40 @@ impl App {
             recorder: None,
             encode_thread: None,
             upload_thread: None,
+            peak_history: VecDeque::with_capacity(PEAK_HISTORY_CAPACITY),
+            recent: Vec::new(),
+            recent_last_refresh: None,
+            recent_thread: None,
+        };
+        app.spawn_recent_scan();
+        app
+    }
+
+    pub fn recent(&self) -> &[RecentRecording] {
+        &self.recent
+    }
+
+    /// Spawns a background scan of `output_dir`. Kept off the TUI thread so a
+    /// slow filesystem (network mount, spinning disk) can't stall rendering.
+    fn spawn_recent_scan(&mut self) {
+        if self.recent_thread.is_some() {
+            return;
+        }
+        self.recent_last_refresh = Some(Instant::now());
+        let dir = self.output_dir.clone();
+        self.recent_thread = Some(std::thread::spawn(move || scan_recent(&dir)));
+    }
+
+    /// Polls the in-flight scan; installs its result if ready. No-op when
+    /// nothing is pending.
+    fn poll_recent(&mut self) {
+        if !self.recent_thread.as_ref().is_some_and(|h| h.is_finished()) {
+            return;
+        }
+        if let Some(handle) = self.recent_thread.take()
+            && let Ok(list) = handle.join()
+        {
+            self.recent = list;
         }
     }
 
@@ -61,6 +123,10 @@ impl App {
 
     pub fn peak(&self) -> f32 {
         f32::from_bits(self.peak_level.load(Ordering::Relaxed))
+    }
+
+    pub fn peak_history(&self) -> &VecDeque<f32> {
+        &self.peak_history
     }
 
     pub fn start_recording(&mut self) -> anyhow::Result<()> {
@@ -152,7 +218,23 @@ impl App {
 
     pub fn tick(&mut self) {
         // Called each TUI frame to update dynamic state.
-        // peak_level is read directly via atomic, no action needed here.
+        // Sample the peak meter into a rolling history so the UI can render a
+        // waveform sparkline; only meaningful while recording, but keeping the
+        // last recording's tail around briefly is harmless.
+        if self.peak_history.len() == PEAK_HISTORY_CAPACITY {
+            self.peak_history.pop_front();
+        }
+        self.peak_history.push_back(self.peak());
+
+        self.poll_recent();
+        if self.recent_thread.is_none()
+            && self
+                .recent_last_refresh
+                .is_none_or(|t| t.elapsed() >= RECENT_REFRESH_INTERVAL)
+        {
+            self.spawn_recent_scan();
+        }
+
         if !self.upload_thread.as_ref().is_some_and(|h| h.is_finished()) {
             return;
         }
@@ -184,6 +266,69 @@ impl App {
             },
             _ => resolved,
         };
+    }
+}
+
+/// Scan `dir` for mp3 recordings, newest first, capped to
+/// `MAX_RECENT_RECORDINGS`. Timestamp and size strings are formatted here so
+/// the render loop never has to touch the timezone database or allocate.
+fn scan_recent(dir: &Path) -> Vec<RecentRecording> {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return Vec::new();
+    };
+    // Collect just the sort keys and raw size first; defer timestamp/size
+    // string formatting until after truncation so only the ~16 surviving
+    // entries pay the allocation cost, even when the directory has thousands
+    // of files.
+    let mut list: Vec<(Option<SystemTime>, PathBuf, u64)> = entries
+        .flatten()
+        .filter_map(|e| {
+            let path = e.path();
+            let is_mp3 = path
+                .extension()
+                .and_then(|s| s.to_str())
+                .is_some_and(|s| s.eq_ignore_ascii_case("mp3"));
+            if !is_mp3 {
+                return None;
+            }
+            let meta = e.metadata().ok()?;
+            Some((meta.modified().ok(), path, meta.len()))
+        })
+        .collect();
+    // `Option::cmp` puts `None` before `Some`, so sorting descending naturally
+    // groups timestamped files first with the newest on top; path breaks ties.
+    list.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| b.1.cmp(&a.1)));
+    list.truncate(MAX_RECENT_RECORDINGS);
+    list.into_iter()
+        .map(|(modified, path, size_bytes)| {
+            let timestamp = modified
+                .map(|m| {
+                    let dt: chrono::DateTime<chrono::Local> = m.into();
+                    dt.format("%m-%d %H:%M").to_string()
+                })
+                .unwrap_or_else(|| "—".to_string());
+            RecentRecording {
+                path,
+                size: format_size(size_bytes),
+                timestamp,
+            }
+        })
+        .collect()
+}
+
+fn format_size(bytes: u64) -> String {
+    const KB: f64 = 1024.0;
+    const MB: f64 = KB * 1024.0;
+    const GB: f64 = MB * 1024.0;
+    let b = bytes as f64;
+    if b >= GB {
+        format!("{:.2} GB", b / GB)
+    } else if b >= MB {
+        format!("{:.1} MB", b / MB)
+    } else if b >= KB {
+        format!("{:.0} KB", b / KB)
+    } else {
+        format!("{bytes} B")
     }
 }
 
