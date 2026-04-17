@@ -7,7 +7,8 @@ use throbber_widgets_tui::{Throbber, ThrobberState};
 use tui_big_text::{BigText, PixelSize};
 use tui_popup::Popup;
 
-use crate::app::{App, AppState, RecentRecording};
+use crate::app::{App, AppState, RecentRecording, format_size};
+use crate::upload::progress::{UploadPhase, UploadProgress};
 
 // Unified palette. Using named constants keeps state-specific tinting
 // consistent across the timer, borders, status line and level meter.
@@ -117,7 +118,9 @@ fn render_center(
     use_big_timer: bool,
 ) {
     match state {
-        AppState::Uploading(path) => render_upload_in_progress(frame, area, path, accent),
+        AppState::Uploading(path) => {
+            render_upload_in_progress(frame, area, path, &app.upload_progress, accent)
+        }
         AppState::Uploaded { webview_url, .. } => {
             render_upload_done(frame, area, webview_url, accent, use_big_timer)
         }
@@ -173,7 +176,13 @@ fn render_timer(
     }
 }
 
-fn render_upload_in_progress(frame: &mut Frame, area: Rect, path: &std::path::Path, accent: Color) {
+fn render_upload_in_progress(
+    frame: &mut Frame,
+    area: Rect,
+    path: &std::path::Path,
+    progress: &UploadProgress,
+    accent: Color,
+) {
     let block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
@@ -186,8 +195,87 @@ fn render_upload_in_progress(frame: &mut Frame, area: Rect, path: &std::path::Pa
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
-    // Build a throbber state from the current time so the symbol advances
-    // without threading persistent state through the App.
+    let spinner_span = upload_throbber_span(accent);
+    let phase = progress.phase();
+    let phase_label = match phase {
+        UploadPhase::Preparing => "Preparing upload…",
+        UploadPhase::Uploading => "Uploading",
+        UploadPhase::Finalizing => "Finalizing episode…",
+    };
+
+    let file_line = Line::from(Span::styled(
+        format!("file: {}", path.display()),
+        Style::default().fg(ACCENT_DIM),
+    ));
+
+    match phase {
+        UploadPhase::Uploading => {
+            // Split inner into: status line, gauge, blank, file path.
+            let rows = Layout::vertical([
+                Constraint::Length(1),
+                Constraint::Length(1),
+                Constraint::Length(1),
+                Constraint::Min(1),
+            ])
+            .split(inner);
+
+            let status = Paragraph::new(Line::from(vec![
+                spinner_span,
+                Span::raw(" "),
+                Span::styled(
+                    phase_label,
+                    Style::default().fg(accent).add_modifier(Modifier::DIM),
+                ),
+            ]))
+            .alignment(Alignment::Center);
+            frame.render_widget(status, rows[0]);
+
+            let uploaded = progress.uploaded();
+            let total = progress.total();
+            let ratio = progress.ratio().unwrap_or(0.0);
+            let label = if total == 0 {
+                "starting…".to_string()
+            } else {
+                format_upload_label(uploaded, total)
+            };
+            let gauge = Gauge::default()
+                .gauge_style(Style::default().fg(accent).bg(Color::Reset))
+                .label(Span::styled(
+                    label,
+                    Style::default()
+                        .fg(Color::White)
+                        .add_modifier(Modifier::BOLD),
+                ))
+                .ratio(ratio);
+            frame.render_widget(gauge, rows[1]);
+
+            frame.render_widget(
+                Paragraph::new(file_line).alignment(Alignment::Center),
+                rows[3],
+            );
+        }
+        UploadPhase::Preparing | UploadPhase::Finalizing => {
+            // No useful bytes to show yet / anymore — keep the quick phases
+            // minimal so they read as transitions, not stalls.
+            let lines = vec![
+                Line::from(vec![
+                    spinner_span,
+                    Span::raw(" "),
+                    Span::styled(
+                        phase_label,
+                        Style::default().fg(accent).add_modifier(Modifier::DIM),
+                    ),
+                ]),
+                Line::from(""),
+                file_line,
+            ];
+            frame.render_widget(Paragraph::new(lines).alignment(Alignment::Center), inner);
+        }
+    }
+}
+
+/// Build the time-driven throbber used by the upload panel.
+fn upload_throbber_span<'a>(accent: Color) -> Span<'a> {
     let step = ((std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis())
@@ -199,24 +287,21 @@ fn render_upload_in_progress(frame: &mut Frame, area: Rect, path: &std::path::Pa
     let throb = Throbber::default()
         .throbber_set(throbber_widgets_tui::BRAILLE_EIGHT_DOUBLE)
         .style(Style::default().fg(accent));
-    let spinner_span = throb.to_symbol_span(&throb_state);
+    throb.to_symbol_span(&throb_state)
+}
 
-    let lines = vec![
-        Line::from(vec![
-            spinner_span,
-            Span::raw(" "),
-            Span::styled(
-                "uploading",
-                Style::default().fg(accent).add_modifier(Modifier::DIM),
-            ),
-        ]),
-        Line::from(""),
-        Line::from(Span::styled(
-            format!("file: {}", path.display()),
-            Style::default().fg(ACCENT_DIM),
-        )),
-    ];
-    frame.render_widget(Paragraph::new(lines).alignment(Alignment::Center), inner);
+/// "48% · 2.3 MB / 4.8 MB" — a compact label for the progress gauge.
+fn format_upload_label(uploaded: u64, total: u64) -> String {
+    let pct = if total == 0 {
+        0
+    } else {
+        ((uploaded.saturating_mul(100)) / total).min(100)
+    };
+    format!(
+        "{pct}% · {} / {}",
+        format_size(uploaded),
+        format_size(total)
+    )
 }
 
 fn render_upload_done(
@@ -533,4 +618,31 @@ fn format_duration(d: std::time::Duration) -> String {
     let minutes = (total_secs % 3600) / 60;
     let seconds = total_secs % 60;
     format!("{hours:02}:{minutes:02}:{seconds:02}")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn upload_label_shows_percent_and_sizes() {
+        // 1.5 MiB of 5.0 MiB → 30%
+        let s = format_upload_label(1_572_864, 5_242_880);
+        assert!(s.contains("30%"), "got: {s}");
+        assert!(s.contains("1.5 MB"), "got: {s}");
+        assert!(s.contains("5.0 MB"), "got: {s}");
+    }
+
+    #[test]
+    fn upload_label_with_zero_total_is_zero_percent() {
+        let s = format_upload_label(0, 0);
+        assert!(s.starts_with("0%"), "got: {s}");
+    }
+
+    #[test]
+    fn upload_label_clamps_over_100_percent() {
+        // Defensively clamp in case a race lets uploaded briefly exceed total.
+        let s = format_upload_label(10, 5);
+        assert!(s.contains("100%"), "got: {s}");
+    }
 }

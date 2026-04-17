@@ -324,7 +324,7 @@ fn scan_recent(dir: &Path) -> Vec<RecentRecording> {
         .collect()
 }
 
-fn format_size(bytes: u64) -> String {
+pub(crate) fn format_size(bytes: u64) -> String {
     const KB: f64 = 1024.0;
     const MB: f64 = KB * 1024.0;
     const GB: f64 = MB * 1024.0;
