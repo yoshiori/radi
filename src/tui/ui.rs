@@ -210,12 +210,15 @@ fn render_upload_in_progress(
 
     match phase {
         UploadPhase::Uploading => {
-            // Split inner into: status line, gauge, blank, file path.
+            // status / gauge / spacer / file path. Spacer absorbs any slack
+            // so the file path row is always the one that keeps its height
+            // when the panel is short (e.g. timer_height == 3 on a tiny
+            // terminal).
             let rows = Layout::vertical([
                 Constraint::Length(1),
                 Constraint::Length(1),
+                Constraint::Min(0),
                 Constraint::Length(1),
-                Constraint::Min(1),
             ])
             .split(inner);
 
@@ -292,11 +295,13 @@ fn upload_throbber_span<'a>(accent: Color) -> Span<'a> {
 
 /// "48% · 2.3 MB / 4.8 MB" — a compact label for the progress gauge.
 fn format_upload_label(uploaded: u64, total: u64) -> String {
-    let pct = if total == 0 {
-        0
-    } else {
-        ((uploaded.saturating_mul(100)) / total).min(100)
-    };
+    // `checked_div` avoids a separate `if total == 0` branch that clippy
+    // flags as `manual_checked_ops` on newer toolchains.
+    let pct = uploaded
+        .saturating_mul(100)
+        .checked_div(total)
+        .unwrap_or(0)
+        .min(100);
     format!(
         "{pct}% · {} / {}",
         format_size(uploaded),

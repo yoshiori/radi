@@ -32,10 +32,14 @@ impl UploadProgress {
     }
 
     pub fn phase(&self) -> UploadPhase {
+        // Explicit arms for each variant; unexpected bit patterns fall back
+        // to `Preparing` so an out-of-range value reads as "hasn't started
+        // yet" rather than silently appearing as Finalizing.
         match self.phase.load(Ordering::Relaxed) {
             0 => UploadPhase::Preparing,
             1 => UploadPhase::Uploading,
-            _ => UploadPhase::Finalizing,
+            2 => UploadPhase::Finalizing,
+            _ => UploadPhase::Preparing,
         }
     }
 
