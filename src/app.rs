@@ -28,7 +28,8 @@ use crate::audio::denoiser::Denoiser;
 use crate::audio::encoder::Mp3Writer;
 use crate::audio::recorder::{self, Recorder};
 use crate::config::ListenConfig;
-use crate::upload::listen::{EpisodeStatus, ListenClient, Visibility};
+use crate::upload::listen::{EpisodeSpec, EpisodeStatus, ListenClient, Visibility};
+use crate::upload::progress::UploadProgress;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum AppState {
@@ -48,6 +49,7 @@ pub struct App {
     pub output_path: PathBuf,
     pub output_dir: PathBuf,
     pub peak_level: Arc<AtomicU32>,
+    pub upload_progress: Arc<UploadProgress>,
     pub device_name: Option<String>,
     recording_start: Option<Instant>,
     final_elapsed: Duration,
@@ -71,6 +73,7 @@ impl App {
             output_path,
             output_dir,
             peak_level: Arc::new(AtomicU32::new(0)),
+            upload_progress: UploadProgress::new(),
             device_name,
             recording_start: None,
             final_elapsed: Duration::ZERO,
@@ -198,16 +201,21 @@ impl App {
         let podcast_id = listen.podcast_id.clone();
         let upload_path = path.clone();
 
+        // Start from a fresh progress handle so a previous failed attempt
+        // can't leak stale bytes into the UI.
+        self.upload_progress = UploadProgress::new();
+        let progress = self.upload_progress.clone();
+
         let handle = std::thread::spawn(move || -> anyhow::Result<String> {
             let client = ListenClient::new(endpoint, token)?;
-            let episode = client.upload_episode(
-                &podcast_id,
-                &title,
-                None,
-                &upload_path,
-                Visibility::Public,
-                EpisodeStatus::Draft,
-            )?;
+            let spec = EpisodeSpec {
+                podcast_id: &podcast_id,
+                title: &title,
+                description: None,
+                visibility: Visibility::Public,
+                status: EpisodeStatus::Draft,
+            };
+            let episode = client.upload_episode_with_progress(spec, &upload_path, &progress)?;
             Ok(episode.webview_url)
         });
 
@@ -316,7 +324,7 @@ fn scan_recent(dir: &Path) -> Vec<RecentRecording> {
         .collect()
 }
 
-fn format_size(bytes: u64) -> String {
+pub(crate) fn format_size(bytes: u64) -> String {
     const KB: f64 = 1024.0;
     const MB: f64 = KB * 1024.0;
     const GB: f64 = MB * 1024.0;
@@ -376,6 +384,17 @@ mod tests {
         let mut app = App::new(PathBuf::from("."));
         assert!(app.stop_recording().is_ok());
         assert_eq!(app.state, AppState::Idle);
+    }
+
+    #[test]
+    fn test_upload_progress_starts_clean() {
+        let app = App::new(PathBuf::from("."));
+        assert_eq!(app.upload_progress.uploaded(), 0);
+        assert_eq!(app.upload_progress.total(), 0);
+        assert_eq!(
+            app.upload_progress.phase(),
+            crate::upload::progress::UploadPhase::Preparing
+        );
     }
 
     #[test]

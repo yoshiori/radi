@@ -5,9 +5,12 @@
 //!   2. HTTP PUT the audio bytes to `uploadUrl`
 //!   3. `createEpisode` with `audioPath = path` creates the episode
 use std::path::Path;
+use std::sync::Arc;
 
 use anyhow::{Context, anyhow};
 use serde_json::{Value, json};
+
+use crate::upload::progress::{ProgressReader, UploadPhase, UploadProgress};
 
 const CREATE_PRESIGNED_MUTATION: &str = r#"
 mutation($fileName: String!, $type: MediaType!, $contentType: String) {
@@ -68,6 +71,17 @@ pub struct PresignedUpload {
 pub struct UploadedEpisode {
     pub id: String,
     pub webview_url: String,
+}
+
+/// Fixed metadata for a new episode — bundled so the upload entry point
+/// stays under the clippy `too_many_arguments` lint.
+#[derive(Debug, Clone, Copy)]
+pub struct EpisodeSpec<'a> {
+    pub podcast_id: &'a str,
+    pub title: &'a str,
+    pub description: Option<&'a str>,
+    pub visibility: Visibility,
+    pub status: EpisodeStatus,
 }
 
 pub struct ListenClient {
@@ -135,19 +149,33 @@ impl ListenClient {
         })
     }
 
-    pub fn put_audio(
+    /// Streams `file_path` to `upload_url` with a PUT and publishes byte
+    /// progress into `progress`. Sets `total` from the file size before
+    /// streaming, then `ProgressReader` increments `uploaded` as reqwest
+    /// pulls chunks. `Body::sized` is used explicitly because S3 presigned
+    /// URLs require `Content-Length`.
+    pub fn put_audio_with_progress(
         &self,
         upload_url: &str,
         file_path: &Path,
         content_type: &str,
+        progress: &Arc<UploadProgress>,
     ) -> anyhow::Result<()> {
         let file = std::fs::File::open(file_path)
             .with_context(|| format!("open audio file {}", file_path.display()))?;
+        let len = file
+            .metadata()
+            .with_context(|| format!("stat audio file {}", file_path.display()))?
+            .len();
+        progress.set_total(len);
+
+        let reader = ProgressReader::new(file, progress.clone());
+        let body = reqwest::blocking::Body::sized(reader, len);
         let resp = self
             .client
             .put(upload_url)
             .header("Content-Type", content_type)
-            .body(file)
+            .body(body)
             .send()
             .context("send presigned PUT")?;
         if !resp.status().is_success() {
@@ -187,30 +215,34 @@ impl ListenClient {
         })
     }
 
-    /// End-to-end: presign → PUT → createEpisode.
-    pub fn upload_episode(
+    /// End-to-end: presign → PUT → createEpisode. Publishes phase and byte
+    /// progress into `progress` so a UI can show a live gauge.
+    pub fn upload_episode_with_progress(
         &self,
-        podcast_id: &str,
-        title: &str,
-        description: Option<&str>,
+        spec: EpisodeSpec<'_>,
         mp3_path: &Path,
-        visibility: Visibility,
-        status: EpisodeStatus,
+        progress: &Arc<UploadProgress>,
     ) -> anyhow::Result<UploadedEpisode> {
         let file_name = mp3_path
             .file_name()
             .and_then(|s| s.to_str())
             .ok_or_else(|| anyhow!("invalid mp3 filename"))?;
         let content_type = "audio/mpeg";
+
+        progress.set_phase(UploadPhase::Preparing);
         let presigned = self.create_presigned_upload(file_name, content_type)?;
-        self.put_audio(&presigned.upload_url, mp3_path, content_type)?;
+
+        progress.set_phase(UploadPhase::Uploading);
+        self.put_audio_with_progress(&presigned.upload_url, mp3_path, content_type, progress)?;
+
+        progress.set_phase(UploadPhase::Finalizing);
         self.create_episode(
-            podcast_id,
-            title,
-            description,
+            spec.podcast_id,
+            spec.title,
+            spec.description,
             &presigned.path,
-            visibility,
-            status,
+            spec.visibility,
+            spec.status,
         )
     }
 }
@@ -288,23 +320,34 @@ mod tests {
     }
 
     #[test]
-    fn put_audio_sends_bytes_with_content_type() {
+    fn put_audio_with_progress_reports_total_and_uploaded_bytes() {
         let mut server = mockito::Server::new();
-        let tmp = std::env::temp_dir().join("radi-test-put.mp3");
-        std::fs::write(&tmp, b"hello-mp3").unwrap();
+        let tmp = std::env::temp_dir().join("radi-test-put-progress.mp3");
+        let payload = b"hello-mp3-payload"; // 17 bytes
+        std::fs::write(&tmp, payload).unwrap();
 
         let mock = server
-            .mock("PUT", "/put-target")
+            .mock("PUT", "/put-progress")
+            .match_header("content-length", "17")
             .match_header("content-type", "audio/mpeg")
-            .match_body("hello-mp3")
+            .match_body("hello-mp3-payload")
             .with_status(200)
             .create();
 
+        let progress = UploadProgress::new();
         let client = ListenClient::new(format!("{}/graphql", server.url()), "t").unwrap();
         client
-            .put_audio(&format!("{}/put-target", server.url()), &tmp, "audio/mpeg")
+            .put_audio_with_progress(
+                &format!("{}/put-progress", server.url()),
+                &tmp,
+                "audio/mpeg",
+                &progress,
+            )
             .unwrap();
+
         mock.assert();
+        assert_eq!(progress.total(), 17);
+        assert_eq!(progress.uploaded(), 17);
         let _ = std::fs::remove_file(&tmp);
     }
 
@@ -334,15 +377,15 @@ mod tests {
             "radi-e2e-test {}",
             chrono::Local::now().format("%Y-%m-%d %H:%M:%S")
         );
+        let spec = EpisodeSpec {
+            podcast_id: &podcast_id,
+            title: &title,
+            description: Some("automated e2e test from radi"),
+            visibility: Visibility::Public,
+            status: EpisodeStatus::Draft,
+        };
         let episode = client
-            .upload_episode(
-                &podcast_id,
-                &title,
-                Some("automated e2e test from radi"),
-                &path,
-                Visibility::Public,
-                EpisodeStatus::Draft,
-            )
+            .upload_episode_with_progress(spec, &path, &UploadProgress::new())
             .expect("upload_episode succeeds");
 
         eprintln!("created episode url: {}", episode.webview_url);
