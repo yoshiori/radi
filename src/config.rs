@@ -6,7 +6,7 @@ pub struct Config {
     pub listen: Option<ListenConfig>,
 }
 
-#[derive(Debug, serde::Deserialize, PartialEq)]
+#[derive(Debug, Clone, serde::Deserialize, PartialEq)]
 pub struct ListenConfig {
     pub podcast_id: String,
     #[serde(default)]
