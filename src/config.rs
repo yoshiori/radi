@@ -22,15 +22,22 @@ impl ListenConfig {
     ///
     /// Values prefixed with `op://` are resolved via the 1Password CLI
     /// (`op read <ref>`), so config.toml can reference a vault item without
-    /// storing the secret on disk.
-    pub fn resolved_token(&self) -> anyhow::Result<Option<String>> {
+    /// storing the secret on disk. Errors out when neither source supplies
+    /// a value; the message tells the user exactly where to put one.
+    pub fn required_token(&self) -> anyhow::Result<String> {
         let raw = self
             .api_token
             .clone()
-            .or_else(|| std::env::var("LISTEN_API_TOKEN").ok());
-        match raw {
-            Some(ref s) if s.starts_with("op://") => Ok(Some(resolve_op_reference(s)?)),
-            other => Ok(other),
+            .or_else(|| std::env::var("LISTEN_API_TOKEN").ok())
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "LISTEN API token not configured (set [listen].api_token in config.toml or LISTEN_API_TOKEN env var)"
+                )
+            })?;
+        if raw.starts_with("op://") {
+            resolve_op_reference(&raw)
+        } else {
+            Ok(raw)
         }
     }
 
@@ -153,15 +160,12 @@ mod tests {
     }
 
     #[test]
-    fn test_listen_resolved_token_prefers_config() {
+    fn test_listen_required_token_prefers_config() {
         let listen = ListenConfig {
             podcast_id: "p".into(),
             api_token: Some("from_config".into()),
             endpoint: None,
         };
-        assert_eq!(
-            listen.resolved_token().unwrap().as_deref(),
-            Some("from_config")
-        );
+        assert_eq!(listen.required_token().unwrap(), "from_config");
     }
 }

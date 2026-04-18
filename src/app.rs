@@ -209,9 +209,7 @@ impl App {
         let progress = self.upload_progress.clone();
 
         let handle = std::thread::spawn(move || -> anyhow::Result<String> {
-            let token = listen
-                .resolved_token()?
-                .ok_or_else(|| anyhow::anyhow!("LISTEN API token not configured (set [listen].api_token in config.toml or LISTEN_API_TOKEN env var)"))?;
+            let token = listen.required_token()?;
             let client = ListenClient::new(listen.endpoint_or_default(), token)?;
             let spec = EpisodeSpec {
                 podcast_id: &listen.podcast_id,
