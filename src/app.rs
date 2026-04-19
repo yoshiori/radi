@@ -194,11 +194,13 @@ impl App {
         let AppState::Done(path) = self.state.clone() else {
             return Ok(());
         };
-        let token = listen
-            .resolved_token()?
-            .ok_or_else(|| anyhow::anyhow!("LISTEN API token not configured (set [listen].api_token in config.toml or LISTEN_API_TOKEN env var)"))?;
-        let endpoint = listen.endpoint_or_default().to_string();
-        let podcast_id = listen.podcast_id.clone();
+        // Clone the config so the upload thread owns its own copy and can
+        // call resolved_token() itself. Token resolution must not run on
+        // the main thread — `op://` references shell out to the 1Password
+        // CLI, which can block for seconds (biometric prompt, network
+        // sync) and would freeze the TUI between keypress and the first
+        // Uploading frame.
+        let listen = listen.clone();
         let upload_path = path.clone();
 
         // Start from a fresh progress handle so a previous failed attempt
@@ -207,9 +209,10 @@ impl App {
         let progress = self.upload_progress.clone();
 
         let handle = std::thread::spawn(move || -> anyhow::Result<String> {
-            let client = ListenClient::new(endpoint, token)?;
+            let token = listen.required_token()?;
+            let client = ListenClient::new(listen.endpoint_or_default(), token)?;
             let spec = EpisodeSpec {
-                podcast_id: &podcast_id,
+                podcast_id: &listen.podcast_id,
                 title: &title,
                 description: None,
                 visibility: Visibility::Public,
@@ -384,6 +387,36 @@ mod tests {
         let mut app = App::new(PathBuf::from("."));
         assert!(app.stop_recording().is_ok());
         assert_eq!(app.state, AppState::Idle);
+    }
+
+    #[test]
+    fn start_upload_does_not_block_main_thread_on_op_token() {
+        // When api_token is an `op://` reference, resolution shells out to
+        // the 1Password CLI which can take seconds. The main thread must
+        // not wait on it — otherwise the TUI freezes between the `u`
+        // keypress and the first Uploading frame. Guard by asserting that
+        // start_upload returns promptly and transitions to Uploading even
+        // though the configured token would be slow (or impossible) to
+        // resolve.
+        let mut app = App::new(PathBuf::from("."));
+        let path = PathBuf::from("./start_upload_regression_nonexistent.mp3");
+        app.state = AppState::Done(path.clone());
+
+        let listen = ListenConfig {
+            podcast_id: "pid".into(),
+            api_token: Some("op://never-read-from-main-thread/entry".into()),
+            endpoint: Some("http://127.0.0.1:1/graphql".into()),
+        };
+
+        let t0 = Instant::now();
+        app.start_upload(&listen, "title".into()).unwrap();
+        let elapsed = t0.elapsed();
+
+        assert!(matches!(app.state, AppState::Uploading(_)));
+        assert!(
+            elapsed < Duration::from_millis(100),
+            "start_upload blocked the main thread for {elapsed:?}"
+        );
     }
 
     #[test]
