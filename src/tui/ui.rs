@@ -18,6 +18,10 @@ const REC: Color = Color::Red;
 const OK: Color = Color::Green;
 const WARN: Color = Color::Yellow;
 const ERR: Color = Color::Red;
+/// "Busy, input ignored" — worn by every state that swallows keypresses
+/// (Processing, Uploading). Shares WARN's hue today, but the semantics
+/// differ (busy vs. caution), so the two are kept as distinct constants.
+const BUSY: Color = Color::Yellow;
 
 /// Height below which the big timer is skipped in favour of a plain line —
 /// tui-big-text needs ~8 rows plus the surrounding chrome to render legibly.
@@ -595,8 +599,8 @@ fn status_badge(state: &AppState) -> (&'static str, Style) {
             "● REC",
             Style::default().fg(Color::White).bg(REC).add_modifier(bold),
         ),
-        AppState::Processing => ("◌ PROC", Style::default().fg(WARN).add_modifier(bold)),
-        AppState::Uploading(_) => ("⇪ UP", Style::default().fg(ACCENT).add_modifier(bold)),
+        AppState::Processing => ("◌ PROC", Style::default().fg(BUSY).add_modifier(bold)),
+        AppState::Uploading(_) => ("⇪ UP", Style::default().fg(BUSY).add_modifier(bold)),
         AppState::Uploaded { .. } => ("✓ DONE", Style::default().fg(OK).add_modifier(bold)),
         AppState::UploadFailed { .. } => ("✗ FAIL", Style::default().fg(ERR).add_modifier(bold)),
         AppState::Done(_) => ("✓ SAVED", Style::default().fg(OK).add_modifier(bold)),
@@ -605,12 +609,15 @@ fn status_badge(state: &AppState) -> (&'static str, Style) {
 }
 
 fn state_accent(state: &AppState) -> Color {
+    // Processing and Uploading share BUSY on purpose: both ignore
+    // keypresses, and a single "input-locked" color lets the user tell
+    // at a glance that the TUI is doing work and typing won't help.
     match state {
         AppState::Idle => ACCENT_DIM,
         AppState::Recording => REC,
-        AppState::Processing => WARN,
+        AppState::Processing => BUSY,
         AppState::Done(_) => OK,
-        AppState::Uploading(_) => ACCENT,
+        AppState::Uploading(_) => BUSY,
         AppState::Uploaded { .. } => OK,
         AppState::UploadFailed { .. } => ERR,
         AppState::ConfirmQuit { .. } => ACCENT_DIM,
