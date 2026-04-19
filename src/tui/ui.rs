@@ -569,12 +569,16 @@ fn render_hints(frame: &mut Frame, area: Rect, state: &AppState, accent: Color) 
         .border_style(Style::default().fg(ACCENT_DIM));
 
     let line = if hints.is_empty() {
-        let placeholder = match state {
-            AppState::Processing => "Processing…",
-            AppState::Uploading(_) => "Uploading…",
-            _ => "",
-        };
-        Line::from(Span::styled(placeholder, Style::default().fg(ACCENT_DIM)))
+        // Busy states: say explicitly that keypresses won't do anything,
+        // and tint in BUSY so the row reads as part of the "input locked"
+        // styling already applied to the header badge and borders.
+        match state {
+            AppState::Processing | AppState::Uploading(_) => Line::from(Span::styled(
+                "— input locked —",
+                Style::default().fg(BUSY).add_modifier(Modifier::DIM),
+            )),
+            _ => Line::from(Span::styled("", Style::default().fg(ACCENT_DIM))),
+        }
     } else {
         let key_style = Style::default().fg(accent).add_modifier(Modifier::BOLD);
         let label_style = Style::default().fg(Color::Gray);
