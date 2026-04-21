@@ -177,14 +177,15 @@ fn lerp_u16(a: u16, b: u16, t: f32) -> u16 {
 /// Spaces are left uncoloured so the gradient reads as applied to the glyphs
 /// rather than filling whole rectangles.
 ///
-/// Each glyph is returned as a `&'static str` so `Span::styled` can take a
-/// borrow rather than forcing a fresh `String` allocation per character per
-/// frame. The header re-renders on every main-loop tick, so at ~162 glyphs
-/// per frame this matters.
-fn banner_line(row: &str, phase: f32) -> Line<'static> {
-    let total = row.chars().count().max(2) as f32;
-    let mut spans: Vec<Span<'static>> = Vec::with_capacity(row.chars().count());
-    for (i, ch) in row.chars().enumerate() {
+/// Each glyph is handed to `Span::styled` as a sub-slice of the original
+/// `&'static str`. Because `BANNER` is `'static`, its slices are also
+/// `&'static str`, which lets the resulting `Line<'static>` avoid a per-char
+/// `String` allocation without needing a glyph lookup table.
+fn banner_line(row: &'static str, phase: f32) -> Line<'static> {
+    let char_count = row.chars().count();
+    let total = char_count.max(2) as f32;
+    let mut spans: Vec<Span<'static>> = Vec::with_capacity(char_count);
+    for (i, (offset, ch)) in row.char_indices().enumerate() {
         let ratio = i as f32 / (total - 1.0);
         let style = if ch == ' ' {
             Style::default()
@@ -193,25 +194,10 @@ fn banner_line(row: &str, phase: f32) -> Line<'static> {
                 .fg(gradient(ratio, phase))
                 .add_modifier(Modifier::BOLD)
         };
-        spans.push(Span::styled(glyph_str(ch), style));
+        let glyph: &'static str = &row[offset..offset + ch.len_utf8()];
+        spans.push(Span::styled(glyph, style));
     }
     Line::from(spans)
-}
-
-/// Map each glyph appearing in `BANNER` to a `&'static str`. Unknown chars
-/// fall through to a space so the column width is preserved without panicking
-/// on unexpected input.
-fn glyph_str(ch: char) -> &'static str {
-    match ch {
-        '█' => "█",
-        '╗' => "╗",
-        '╔' => "╔",
-        '╚' => "╚",
-        '╝' => "╝",
-        '═' => "═",
-        '║' => "║",
-        _ => " ",
-    }
 }
 
 /// 3-stop RGB gradient: cyan → magenta → warm orange.
