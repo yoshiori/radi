@@ -8,6 +8,7 @@ use tui_big_text::{BigText, PixelSize};
 use tui_popup::Popup;
 
 use crate::app::{App, AppState, RecentRecording, format_size};
+use crate::tui::splash;
 use crate::upload::progress::{UploadPhase, UploadProgress};
 
 // Unified palette. Using named constants keeps state-specific tinting
@@ -22,6 +23,15 @@ const ERR: Color = Color::Red;
 /// Height below which the big timer is skipped in favour of a plain line —
 /// tui-big-text needs ~8 rows plus the surrounding chrome to render legibly.
 const BIG_TIMER_MIN_HEIGHT: u16 = 22;
+
+/// Height below which the fancy ANSI Shadow banner is skipped in favour of
+/// the original 3-row text header. The banner needs 6 rows + 1 info row +
+/// 2 border rows = 9, and the rest of the main layout (timer + level + hints
+/// + spacer) needs ≥18 rows after that, giving 27 total.
+const BIG_HEADER_MIN_HEIGHT: u16 = 27;
+
+/// Vertical budget for the banner-style header panel.
+const BIG_HEADER_HEIGHT: u16 = 9;
 
 pub fn render(frame: &mut Frame, app: &App) {
     // For ConfirmQuit, render the underlying state as a dimmed backdrop
@@ -64,26 +74,84 @@ fn render_quit_popup(frame: &mut Frame, previous: &AppState) {
 
 fn render_main(frame: &mut Frame, app: &App, state: &AppState) {
     let accent = state_accent(state);
-    let use_big_timer = frame.area().height >= BIG_TIMER_MIN_HEIGHT;
+    let area = frame.area();
+    let use_big_timer = area.height >= BIG_TIMER_MIN_HEIGHT;
+    let use_big_header = area.height >= BIG_HEADER_MIN_HEIGHT;
 
+    let header_height: u16 = if use_big_header { BIG_HEADER_HEIGHT } else { 3 };
     let timer_height: u16 = if use_big_timer { 9 } else { 3 };
     let chunks = Layout::vertical([
-        Constraint::Length(3),            // header
-        Constraint::Length(timer_height), // timer / upload status
-        Constraint::Length(5),            // level meter (sparkline + gauge)
-        Constraint::Min(0),               // spacer
-        Constraint::Length(3),            // key hints
+        Constraint::Length(header_height), // header
+        Constraint::Length(timer_height),  // timer / upload status
+        Constraint::Length(5),             // level meter (sparkline + gauge)
+        Constraint::Min(0),                // spacer
+        Constraint::Length(3),             // key hints
     ])
-    .split(frame.area());
+    .split(area);
 
-    render_header(frame, chunks[0], app, state, accent);
+    render_header(frame, chunks[0], app, state, accent, use_big_header);
     render_center(frame, chunks[1], app, state, accent, use_big_timer);
     render_level(frame, chunks[2], app, state, accent);
     render_recent(frame, chunks[3], app, accent);
     render_hints(frame, chunks[4], state, accent);
 }
 
-fn render_header(frame: &mut Frame, area: Rect, app: &App, state: &AppState, accent: Color) {
+/// Return the exact rect where the big-header banner is drawn, matching the
+/// layout used by `render_header_banner`. Used by the splash→header slide
+/// transition to compute the landing position, and to `Clear` the slot so the
+/// floating banner doesn't visually overlap a duplicate in the header.
+/// Returns `None` if the current frame is not large enough for the banner
+/// header (in which case the compact header is in use and has no slot).
+pub(crate) fn header_banner_slot(frame_area: Rect) -> Option<Rect> {
+    if frame_area.height < BIG_HEADER_MIN_HEIGHT {
+        return None;
+    }
+    let inner_x = frame_area.x + 1;
+    let inner_y = frame_area.y + 1;
+    let inner_width = frame_area.width.saturating_sub(2);
+    if inner_width < splash::BANNER_WIDTH {
+        return None;
+    }
+    let banner_col_width = splash::BANNER_WIDTH + 2;
+    let side_by_side = inner_width >= banner_col_width + 18;
+    let slot_x = if side_by_side {
+        // Banner is rendered at `cols[0].x + 1` inside the banner column,
+        // giving one char of left padding before the first glyph.
+        inner_x + 1
+    } else {
+        // Stacked: banner is centred horizontally across the full inner width.
+        inner_x + (inner_width - splash::BANNER_WIDTH) / 2
+    };
+    Some(Rect::new(
+        slot_x,
+        inner_y,
+        splash::BANNER_WIDTH,
+        splash::BANNER_HEIGHT,
+    ))
+}
+
+fn render_header(
+    frame: &mut Frame,
+    area: Rect,
+    app: &App,
+    state: &AppState,
+    accent: Color,
+    use_big_header: bool,
+) {
+    if use_big_header {
+        render_header_banner(frame, area, app, state, accent);
+    } else {
+        render_header_compact(frame, area, app, state, accent);
+    }
+}
+
+fn render_header_compact(
+    frame: &mut Frame,
+    area: Rect,
+    app: &App,
+    state: &AppState,
+    accent: Color,
+) {
     let (badge, badge_style) = status_badge(state);
     let device = app.device_name.as_deref().unwrap_or("No device");
 
@@ -107,6 +175,102 @@ fn render_header(frame: &mut Frame, area: Rect, app: &App, state: &AppState, acc
         .block(block)
         .alignment(Alignment::Left);
     frame.render_widget(para, area);
+}
+
+fn render_header_banner(frame: &mut Frame, area: Rect, app: &App, state: &AppState, accent: Color) {
+    let (badge, badge_style) = status_badge(state);
+    let device = app.device_name.as_deref().unwrap_or("No device");
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(accent));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let banner_col_width = splash::BANNER_WIDTH + 2;
+    // Side-by-side needs enough room for banner + some info column. 18 cols
+    // comfortably fits the status badge and short device names; longer device
+    // names will still render but may get truncated, which is fine.
+    let side_by_side = inner.width >= banner_col_width + 18;
+
+    if side_by_side {
+        let cols = Layout::horizontal([Constraint::Length(banner_col_width), Constraint::Min(0)])
+            .split(inner);
+
+        // Position banner explicitly (1 char left pad inside banner column)
+        // so `header_banner_slot` can compute the identical rect without
+        // having to reverse Alignment::Center's offset math.
+        let banner_rect = Rect::new(
+            cols[0].x + 1,
+            cols[0].y,
+            splash::BANNER_WIDTH,
+            splash::BANNER_HEIGHT.min(cols[0].height),
+        );
+        frame.render_widget(
+            Paragraph::new(Text::from(splash::banner_lines(1.0))),
+            banner_rect,
+        );
+
+        // Info column: subtitle / status / device, vertically centred-ish.
+        let info_rows = Layout::vertical([
+            Constraint::Length(1), // top pad
+            Constraint::Length(1), // subtitle
+            Constraint::Length(1), // status badge
+            Constraint::Length(1), // device
+            Constraint::Min(0),    // bottom pad
+        ])
+        .split(cols[1]);
+
+        frame.render_widget(
+            Paragraph::new(Line::from(Span::styled(
+                "The TUI podcast recorder",
+                Style::default().fg(ACCENT_DIM).add_modifier(Modifier::BOLD),
+            ))),
+            info_rows[1],
+        );
+        frame.render_widget(
+            Paragraph::new(Line::from(Span::styled(badge, badge_style))),
+            info_rows[2],
+        );
+        frame.render_widget(
+            Paragraph::new(Line::from(vec![
+                Span::styled("🎙 ", Style::default().fg(ACCENT_DIM)),
+                Span::styled(device.to_string(), Style::default().fg(Color::Gray)),
+            ])),
+            info_rows[3],
+        );
+    } else {
+        // Stacked: banner centred on top, single-line info on the bottom.
+        let rows = Layout::vertical([
+            Constraint::Length(splash::BANNER_HEIGHT),
+            Constraint::Min(1),
+        ])
+        .split(inner);
+
+        let pad = rows[0].width.saturating_sub(splash::BANNER_WIDTH) / 2;
+        let banner_rect = Rect::new(
+            rows[0].x + pad,
+            rows[0].y,
+            splash::BANNER_WIDTH.min(rows[0].width),
+            splash::BANNER_HEIGHT.min(rows[0].height),
+        );
+        frame.render_widget(
+            Paragraph::new(Text::from(splash::banner_lines(1.0))),
+            banner_rect,
+        );
+
+        frame.render_widget(
+            Paragraph::new(Line::from(vec![
+                Span::styled(badge, badge_style),
+                Span::raw("  "),
+                Span::styled("🎙 ", Style::default().fg(ACCENT_DIM)),
+                Span::styled(device.to_string(), Style::default().fg(Color::Gray)),
+            ]))
+            .alignment(Alignment::Center),
+            rows[1],
+        );
+    }
 }
 
 fn render_center(

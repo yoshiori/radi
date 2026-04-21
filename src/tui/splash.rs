@@ -13,8 +13,8 @@ const BANNER: &str = "\
 ██║  ██║██║  ██║██████╔╝██║
 ╚═╝  ╚═╝╚═╝  ╚═╝╚═════╝ ╚═╝";
 
-const BANNER_WIDTH: u16 = 27;
-const BANNER_HEIGHT: u16 = 6;
+pub(crate) const BANNER_WIDTH: u16 = 27;
+pub(crate) const BANNER_HEIGHT: u16 = 6;
 
 const SUBTITLE: &str = "The TUI podcast recorder";
 const TAGLINE: &str = "with ML noise suppression";
@@ -52,9 +52,8 @@ fn render_full(frame: &mut Frame, area: Rect, phase: f32) {
     ])
     .split(area);
 
-    let banner_lines: Vec<Line<'_>> = BANNER.lines().map(|l| banner_line(l, phase)).collect();
     frame.render_widget(
-        Paragraph::new(Text::from(banner_lines)).alignment(Alignment::Center),
+        Paragraph::new(Text::from(banner_lines(phase))).alignment(Alignment::Center),
         rows[1],
     );
 
@@ -142,6 +141,36 @@ fn render_plain(frame: &mut Frame, area: Rect, phase: f32) {
         Line::from(Span::styled(SUBTITLE, Style::default().fg(Color::Gray))),
     ];
     frame.render_widget(Paragraph::new(lines).alignment(Alignment::Center), area);
+}
+
+/// Render the banner at an interpolated position between the splash dwell
+/// location (centre of the frame) and the given `end` rect. Used for the
+/// centre-to-header hand-off animation. The banner is always drawn at full
+/// size (`BANNER_WIDTH × BANNER_HEIGHT`); only its origin moves.
+pub(crate) fn render_floating_banner(frame: &mut Frame, t: f32, end: Rect) {
+    let area = frame.area();
+    // Must match where splash::render_full places the banner row, so the
+    // slide starts exactly where the dwell left it with no visible jump.
+    let content_height: u16 = BANNER_HEIGHT + 5;
+    let top_pad = area.height.saturating_sub(content_height) / 2;
+    let start_x = area.width.saturating_sub(BANNER_WIDTH) / 2;
+    let start_y = top_pad;
+    let x = lerp_u16(start_x, end.x, t);
+    let y = lerp_u16(start_y, end.y, t);
+    let rect = Rect::new(x, y, BANNER_WIDTH, BANNER_HEIGHT);
+    frame.render_widget(Paragraph::new(Text::from(banner_lines(1.0))), rect);
+}
+
+/// Shared banner builder so the splash dwell, the slide hand-off and the
+/// permanent header all render identical glyphs & colours.
+pub(crate) fn banner_lines(phase: f32) -> Vec<Line<'static>> {
+    BANNER.lines().map(|l| banner_line(l, phase)).collect()
+}
+
+fn lerp_u16(a: u16, b: u16, t: f32) -> u16 {
+    let af = a as f32;
+    let bf = b as f32;
+    (af + (bf - af) * t).round().clamp(0.0, u16::MAX as f32) as u16
 }
 
 /// Build a single banner row with per-column RGB gradient.

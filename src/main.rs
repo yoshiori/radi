@@ -8,6 +8,8 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use crossterm::event::{KeyCode, KeyEventKind};
+use ratatui::layout::Rect;
+use ratatui::widgets::Clear;
 
 use app::{App, AppState};
 use tui::{event, splash, ui};
@@ -36,7 +38,7 @@ fn run_app(
 ) -> anyhow::Result<()> {
     let mut app = App::new(output_dir.clone());
 
-    run_splash(terminal)?;
+    run_splash(terminal, &app)?;
 
     loop {
         terminal.draw(|frame| ui::render(frame, &app))?;
@@ -130,20 +132,57 @@ fn run_app(
     Ok(())
 }
 
-/// Display a brief colourful splash before the main UI takes over.
-/// Skippable with any key. Keeps swallowed keys from leaking into the main
-/// loop so the splash can't accidentally trigger `r`/`q` on the first frame.
-fn run_splash(terminal: &mut ratatui::DefaultTerminal) -> anyhow::Result<()> {
+/// Display a brief colourful splash that then slides into the permanent
+/// header banner slot before handing off to the main UI.
+///
+/// Phases:
+/// 1. Dwell (0..dwell): centred RADI splash via `splash::render`.
+/// 2. Slide (dwell..dwell+slide): main Idle UI is drawn underneath, the
+///    header's banner slot is `Clear`ed, and a floating banner is
+///    interpolated from the splash position to the header slot with an
+///    ease-out cubic. At t=1 the floating banner's rect matches the
+///    header's slot exactly, so the transition is seamless.
+///
+/// The slide phase is skipped when the terminal is too short for the big
+/// header (`header_banner_slot` returns `None`) — there's nowhere to land,
+/// so dropping straight into the compact main UI is the sensible fallback.
+///
+/// Skippable with any key at any phase; swallowed keys are intentionally
+/// discarded so a user hitting `r`/`q` on the first frame doesn't
+/// accidentally trigger recording or quit before the Idle screen is drawn.
+fn run_splash(terminal: &mut ratatui::DefaultTerminal, app: &App) -> anyhow::Result<()> {
+    let term_size = terminal.size()?;
+    let term_rect = Rect::new(0, 0, term_size.width, term_size.height);
+    let landing_slot = ui::header_banner_slot(term_rect);
+
+    let dwell = Duration::from_millis(600);
+    let slide = Duration::from_millis(600);
+    let total = if landing_slot.is_some() {
+        dwell + slide
+    } else {
+        dwell
+    };
     let start = Instant::now();
-    let duration = Duration::from_millis(1200);
+
     loop {
-        let elapsed = start.elapsed();
-        if elapsed >= duration {
+        let e = start.elapsed();
+        if e >= total {
             break;
         }
-        let phase = (elapsed.as_secs_f32() / duration.as_secs_f32()).clamp(0.0, 1.0);
-        terminal.draw(|frame| splash::render(frame, phase))?;
-        if let Some(key) = event::poll_event(Duration::from_millis(40))?
+        terminal.draw(|frame| {
+            if e < dwell {
+                let p = (e.as_secs_f32() / dwell.as_secs_f32()).clamp(0.0, 1.0);
+                splash::render(frame, p);
+            } else if let Some(slot) = landing_slot {
+                let raw = ((e - dwell).as_secs_f32() / slide.as_secs_f32()).clamp(0.0, 1.0);
+                // Ease-out cubic: fast at the start, decelerating into the slot.
+                let t = 1.0 - (1.0 - raw).powi(3);
+                ui::render(frame, app);
+                frame.render_widget(Clear, slot);
+                splash::render_floating_banner(frame, t, slot);
+            }
+        })?;
+        if let Some(key) = event::poll_event(Duration::from_millis(30))?
             && key.kind == KeyEventKind::Press
         {
             break;
