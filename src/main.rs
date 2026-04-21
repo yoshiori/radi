@@ -5,12 +5,12 @@ mod tui;
 mod upload;
 
 use std::path::PathBuf;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
-use crossterm::event::KeyCode;
+use crossterm::event::{KeyCode, KeyEventKind};
 
 use app::{App, AppState};
-use tui::{event, ui};
+use tui::{event, splash, ui};
 
 fn main() -> anyhow::Result<()> {
     let config = config::Config::load()?;
@@ -35,6 +35,8 @@ fn run_app(
     listen: Option<config::ListenConfig>,
 ) -> anyhow::Result<()> {
     let mut app = App::new(output_dir.clone());
+
+    run_splash(terminal)?;
 
     loop {
         terminal.draw(|frame| ui::render(frame, &app))?;
@@ -125,5 +127,27 @@ fn run_app(
         }
     }
 
+    Ok(())
+}
+
+/// Display a brief colourful splash before the main UI takes over.
+/// Skippable with any key. Keeps swallowed keys from leaking into the main
+/// loop so the splash can't accidentally trigger `r`/`q` on the first frame.
+fn run_splash(terminal: &mut ratatui::DefaultTerminal) -> anyhow::Result<()> {
+    let start = Instant::now();
+    let duration = Duration::from_millis(1200);
+    loop {
+        let elapsed = start.elapsed();
+        if elapsed >= duration {
+            break;
+        }
+        let phase = (elapsed.as_secs_f32() / duration.as_secs_f32()).clamp(0.0, 1.0);
+        terminal.draw(|frame| splash::render(frame, phase))?;
+        if let Some(key) = event::poll_event(Duration::from_millis(40))?
+            && key.kind == KeyEventKind::Press
+        {
+            break;
+        }
+    }
     Ok(())
 }
