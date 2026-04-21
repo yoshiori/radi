@@ -33,6 +33,12 @@ const BIG_HEADER_MIN_HEIGHT: u16 = 27;
 /// Vertical budget for the banner-style header panel.
 const BIG_HEADER_HEIGHT: u16 = 9;
 
+/// Minimum width of the info column beside the banner before we fall back
+/// to the stacked banner-above-info layout. 18 columns comfortably fits the
+/// status badge and a short device name; longer device names will still
+/// render but may be truncated, which is acceptable.
+const HEADER_INFO_MIN_WIDTH: u16 = 18;
+
 pub fn render(frame: &mut Frame, app: &App) {
     // For ConfirmQuit, render the underlying state as a dimmed backdrop
     // and overlay the confirmation popup on top.
@@ -113,7 +119,7 @@ pub(crate) fn header_banner_slot(frame_area: Rect) -> Option<Rect> {
         return None;
     }
     let banner_col_width = splash::BANNER_WIDTH + 2;
-    let side_by_side = inner_width >= banner_col_width + 18;
+    let side_by_side = inner_width >= banner_col_width + HEADER_INFO_MIN_WIDTH;
     let slot_x = if side_by_side {
         // Banner is rendered at `cols[0].x + 1` inside the banner column,
         // giving one char of left padding before the first glyph.
@@ -189,10 +195,7 @@ fn render_header_banner(frame: &mut Frame, area: Rect, app: &App, state: &AppSta
     frame.render_widget(block, area);
 
     let banner_col_width = splash::BANNER_WIDTH + 2;
-    // Side-by-side needs enough room for banner + some info column. 18 cols
-    // comfortably fits the status badge and short device names; longer device
-    // names will still render but may get truncated, which is fine.
-    let side_by_side = inner.width >= banner_col_width + 18;
+    let side_by_side = inner.width >= banner_col_width + HEADER_INFO_MIN_WIDTH;
 
     if side_by_side {
         let cols = Layout::horizontal([Constraint::Length(banner_col_width), Constraint::Min(0)])

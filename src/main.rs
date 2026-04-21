@@ -151,13 +151,17 @@ fn run_app(
 /// discarded so a user hitting `r`/`q` on the first frame doesn't
 /// accidentally trigger recording or quit before the Idle screen is drawn.
 fn run_splash(terminal: &mut ratatui::DefaultTerminal, app: &App) -> anyhow::Result<()> {
+    // Sampled once to decide whether to schedule a slide phase at all. The
+    // actual landing rect is recomputed every frame inside `draw` so a
+    // terminal resize during the animation lands the banner in the correct
+    // spot for the current layout instead of a stale one.
     let term_size = terminal.size()?;
     let term_rect = Rect::new(0, 0, term_size.width, term_size.height);
-    let landing_slot = ui::header_banner_slot(term_rect);
+    let initial_has_slot = ui::header_banner_slot(term_rect).is_some();
 
     let dwell = Duration::from_millis(600);
     let slide = Duration::from_millis(600);
-    let total = if landing_slot.is_some() {
+    let total = if initial_has_slot {
         dwell + slide
     } else {
         dwell
@@ -173,13 +177,17 @@ fn run_splash(terminal: &mut ratatui::DefaultTerminal, app: &App) -> anyhow::Res
             if e < dwell {
                 let p = (e.as_secs_f32() / dwell.as_secs_f32()).clamp(0.0, 1.0);
                 splash::render(frame, p);
-            } else if let Some(slot) = landing_slot {
+            } else if let Some(slot) = ui::header_banner_slot(frame.area()) {
                 let raw = ((e - dwell).as_secs_f32() / slide.as_secs_f32()).clamp(0.0, 1.0);
                 // Ease-out cubic: fast at the start, decelerating into the slot.
                 let t = 1.0 - (1.0 - raw).powi(3);
                 ui::render(frame, app);
                 frame.render_widget(Clear, slot);
                 splash::render_floating_banner(frame, t, slot);
+            } else {
+                // Window shrank below the big-header threshold mid-slide —
+                // just draw the compact UI for the remaining frames.
+                ui::render(frame, app);
             }
         })?;
         if let Some(key) = event::poll_event(Duration::from_millis(30))?

@@ -176,6 +176,11 @@ fn lerp_u16(a: u16, b: u16, t: f32) -> u16 {
 /// Build a single banner row with per-column RGB gradient.
 /// Spaces are left uncoloured so the gradient reads as applied to the glyphs
 /// rather than filling whole rectangles.
+///
+/// Each glyph is returned as a `&'static str` so `Span::styled` can take a
+/// borrow rather than forcing a fresh `String` allocation per character per
+/// frame. The header re-renders on every main-loop tick, so at ~162 glyphs
+/// per frame this matters.
 fn banner_line(row: &str, phase: f32) -> Line<'static> {
     let total = row.chars().count().max(2) as f32;
     let mut spans: Vec<Span<'static>> = Vec::with_capacity(row.chars().count());
@@ -188,9 +193,25 @@ fn banner_line(row: &str, phase: f32) -> Line<'static> {
                 .fg(gradient(ratio, phase))
                 .add_modifier(Modifier::BOLD)
         };
-        spans.push(Span::styled(ch.to_string(), style));
+        spans.push(Span::styled(glyph_str(ch), style));
     }
     Line::from(spans)
+}
+
+/// Map each glyph appearing in `BANNER` to a `&'static str`. Unknown chars
+/// fall through to a space so the column width is preserved without panicking
+/// on unexpected input.
+fn glyph_str(ch: char) -> &'static str {
+    match ch {
+        '█' => "█",
+        '╗' => "╗",
+        '╔' => "╔",
+        '╚' => "╚",
+        '╝' => "╝",
+        '═' => "═",
+        '║' => "║",
+        _ => " ",
+    }
 }
 
 /// 3-stop RGB gradient: cyan → magenta → warm orange.
