@@ -43,3 +43,34 @@ The app follows a state machine pattern with three concurrent threads:
 - `src/audio/encoder.rs` — MP3 encoding via libmp3lame at 48kHz (f32→i16 conversion)
 - `src/tui/event.rs` — Crossterm keyboard event polling
 - `src/tui/ui.rs` — Ratatui layout rendering (status, level meter, hints)
+
+## LISTEN GraphQL schema snapshot
+
+`docs/listen-schema.graphql` + `docs/listen-schema.json` are a committed
+snapshot of `https://listen.style/graphql`. Read these instead of hitting the
+network when you need to look up a type or mutation signature.
+
+To refresh after LISTEN changes their schema:
+
+```bash
+TOKEN=$(op read --no-newline "op://Private/Listen-api-all/credential")
+
+curl -sS -X POST https://listen.style/graphql \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  --data @docs/introspection-query.json \
+  | docs/normalize-schema.py > docs/listen-schema.json
+
+npx --yes --package=graphql@16 -- node -e '
+  const fs = require("fs");
+  const { buildClientSchema, printSchema, lexicographicSortSchema } = require("graphql");
+  const intro = JSON.parse(fs.readFileSync("docs/listen-schema.json", "utf8"));
+  fs.writeFileSync(
+    "docs/listen-schema.graphql",
+    printSchema(lexicographicSortSchema(buildClientSchema(intro.data))),
+  );
+'
+```
+
+`normalize-schema.py` sorts introspection arrays so re-fetching only diffs on
+real schema changes, not arbitrary reordering from the server.

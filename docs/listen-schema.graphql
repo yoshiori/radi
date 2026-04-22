@@ -1,0 +1,1138 @@
+type AudioLog {
+  createdAt: String
+  episode: Episode!
+  id: ID!
+  ip: String
+  isBot: Boolean!
+  isCompleted: Boolean!
+  isPreview: Boolean!
+  position: Float!
+  referer: String
+  requestedAt: String!
+  updatedAt: String
+  userAgent: String
+}
+
+type Category {
+  children: [Category!]!
+  id: ID!
+  name: String!
+  parent: Category
+  podcasts(
+    """Limits number of fetched items."""
+    first: Int!
+
+    """The offset from which items are returned."""
+    page: Int
+  ): PodcastSimplePaginator!
+}
+
+type Chapter {
+  createdAt: String
+  episode: Episode!
+  id: ID!
+  keywords: String
+  lastLineNumber: Int!
+  startingLineNumber: Int!
+  title: String!
+  updatedAt: String
+}
+
+type Comment {
+  body: String!
+  createdAt: String
+  episode: Episode!
+  id: ID!
+  isDeleted: Boolean!
+  replyComments: [Comment!]!
+  replyTo: ID
+  stars: [CommentStar!]!
+  updatedAt: String
+  user: User!
+}
+
+type CommentStar {
+  comment: Comment!
+  createdAt: String
+  id: ID!
+  updatedAt: String
+  user: User!
+}
+
+type ConnectedAccount {
+  avatarPath: String
+  createdAt: String
+  email: String
+  expiresAt: String
+  id: ID!
+  name: String
+  nickname: String
+  provider: String!
+  providerId: String!
+  refreshToken: String
+  secret: String
+  telephone: String
+  token: String!
+  updatedAt: String
+  user: User!
+}
+
+type Cookie {
+  name: String!
+  value: String!
+}
+
+type Destination {
+  createdAt: String
+  id: ID!
+  podcast: Podcast!
+  service: String!
+  updatedAt: String
+  url: String!
+}
+
+type Document {
+  contents: [DocumentContent!]!
+  coverImage: String
+  createdAt: String
+  id: ID!
+  isDirectory: Boolean!
+  name: String!
+  order: Int!
+  parentId: ID
+  updatedAt: String
+}
+
+type DocumentContent {
+  content: String
+  createdAt: String
+  document: Document!
+  id: ID!
+  lang: String!
+  title: String!
+  updatedAt: String
+}
+
+type Episode {
+  audioData: String
+  canPlayFlag: Boolean!
+  canPlayPreviewFlag: Boolean!
+  commentsCount: Int
+  createdAt: String
+  description: String
+  duration: String
+  fileSize: Int
+  guid: String
+  id: String!
+  imageUrl: String
+  imageUrl80: String
+  imageUrl300: String
+  imageUrl600: String
+  imageUrl1200: String
+  link: String
+  mentionersCount: Int
+  myReview: EpisodeReview
+  playableUrl: String
+  playbackPosition: PlaybackPosition
+  podcast: Podcast!
+  price: Float
+  pubDate: String
+  rawImageUrl: String
+  rootComments: [Comment!]!
+  starrings: [EpisodeStarring!]!
+  stars: [Star!]!
+  status: EpisodeStatus!
+  title: String
+  transcriptExists: Boolean
+  transcriptSrt: String
+  transcriptTxt: String
+  transcriptVtt: String
+  updatedAt: String
+  visibility: EpisodeVisibilityType!
+  webviewUrl: String!
+}
+
+type EpisodeGift {
+  comment: String
+  createdAt: String
+  episode: Episode!
+  gift: Gift!
+  id: ID!
+  podcast: Podcast!
+  price: Int!
+  sellerUser: User!
+  updatedAt: String
+  user: User!
+}
+
+type EpisodeKeyword {
+  createdAt: String
+  episode: Episode!
+  id: ID!
+  keyword: Keyword!
+  updatedAt: String
+}
+
+type EpisodeList {
+  episodes: [Episode!]!
+  id: ID!
+  title: String!
+}
+
+type EpisodeReview {
+  content: String!
+  createdAt: String
+  episode: Episode!
+  id: ID!
+  quoteText: String
+  startTime: Float
+  status: String!
+  updatedAt: String
+  user: User!
+}
+
+"""A paginated list of EpisodeReview items."""
+type EpisodeReviewSimplePaginator {
+  """A list of EpisodeReview items."""
+  data: [EpisodeReview!]!
+
+  """Pagination information about the list of items."""
+  paginatorInfo: SimplePaginatorInfo!
+}
+
+"""A paginated list of Episode items."""
+type EpisodeSimplePaginator {
+  """A list of Episode items."""
+  data: [Episode!]!
+
+  """Pagination information about the list of items."""
+  paginatorInfo: SimplePaginatorInfo!
+}
+
+enum EpisodeSort {
+  NEWEST
+  OLDEST
+}
+
+"""Describes a guest starring on an episode."""
+type EpisodeStarring {
+  createdAt: String
+  episode: Episode!
+  guest: Guest!
+  id: ID!
+  podcast: Podcast!
+  role: String!
+  speakingPercentage: Float
+  updatedAt: String
+}
+
+input EpisodeStarringInput {
+  guestEmail: String
+  guestId: ID
+  guestName: String
+  role: String!
+
+  """
+  Array of speaker IDs (integers) from the transcript diarization that map to this guest
+  """
+  speakers: [Int!]
+}
+
+input EpisodeStarringUpdateInput {
+  id: ID!
+  role: String!
+  speakers: [Int!]
+}
+
+enum EpisodeStatus {
+  DRAFT
+  PUBLISHED
+  SCHEDULED
+}
+
+type EpisodeTag {
+  createdAt: String
+  episode: Episode!
+  id: ID!
+  tag: Tag!
+  updatedAt: String
+}
+
+enum EpisodeVisibilityType {
+  FOLLOWERS_ONLY
+  LIMITED
+  PAID_ONLY
+  PRIVATE
+  PUBLIC
+}
+
+type Event {
+  applyPolicy: String!
+  coverImage: String
+  createdAt: String
+  description: String
+  endDate: String
+  episodeCount: Int!
+  gradientFrom: String
+  gradientTo: String
+  id: ID!
+  podcastCount: Int!
+  startDate: String
+  status: String!
+  title: String!
+  updatedAt: String
+  user: User!
+  webviewUrl: String!
+}
+
+type Follow {
+  createdAt: String
+  id: ID!
+  podcast: Podcast!
+  updatedAt: String
+  user: User!
+}
+
+type Gift {
+  createdAt: String
+  group: String!
+  id: ID!
+  image: String!
+  name: String!
+  price: Int!
+  updatedAt: String
+}
+
+type Guest {
+  createdAt: String
+  defaultStarring: Boolean!
+  email: String
+  id: ID!
+  imageUrl: String
+  imageUrl300: String
+  lastStarred: String
+  name: String!
+  podcast: Podcast!
+  updatedAt: String
+  user: User
+}
+
+type Home {
+  episodeLists: [HomeEpisodeList!]!
+  events: [Event!]!
+}
+
+union HomeEpisodeList = EpisodeList | LiveStreamList | Playlist
+
+type Keyword {
+  createdAt: String
+  episodes: [EpisodeKeyword!]!
+  id: ID!
+  updatedAt: String
+  word: String!
+}
+
+type LiveStream {
+  """現在視聴しているユーザー一覧（アイコン表示用）"""
+  activeViewers: [LiveStreamViewer!]!
+
+  """最新チャットメッセージ一覧。before/after=ISO8601文字列で範囲を絞り込み可能"""
+  chatMessages(after: String, before: String, first: Int): [LiveStreamChatMessage!]!
+  currentViewerCount: Int!
+  description: String
+  endedAt: String
+  episode: Episode
+  id: ID!
+  imageUrl: String
+  isContinuous: Boolean!
+  isUnlisted: Boolean!
+
+  """
+  HLS再生URL: {scheme}://{host}:{port}/live/{stream_key}/index.m3u8 / on_air・standby のときのみ返す
+  """
+  playbackUrl(audioOnly: Boolean = true): String
+  podcast: Podcast!
+  scheduledStartTime: String
+  showYoutubeChat: Boolean!
+  startedAt: String
+  status: LiveStreamStatus!
+  title: String!
+  totalViewCount: Int!
+  uuid: String!
+}
+
+"""ライブ配信チャットメッセージ（Union型）"""
+union LiveStreamChatMessage = LiveStreamComment | LiveStreamExternalComment
+
+enum LiveStreamChatSource {
+  LISTEN
+  YOUTUBE
+}
+
+"""Listen内部メッセージ"""
+type LiveStreamComment {
+  body: String!
+  createdAt: String!
+  id: ID!
+  liveStream: LiveStream!
+  user: User
+}
+
+"""YouTubeチャットメッセージ"""
+type LiveStreamExternalComment {
+  authorAvatarUrl: String!
+  authorName: String!
+  body: String!
+  createdAt: String!
+  id: ID!
+  liveStream: LiveStream!
+}
+
+"""ゲスト視聴者情報"""
+type LiveStreamGuest {
+  """ゲスト用アイコンURL"""
+  avatarUrl: String!
+
+  """ゲストの表示名"""
+  name: String!
+}
+
+type LiveStreamList {
+  id: ID!
+  liveStreams: [LiveStream!]!
+  title: String!
+}
+
+enum LiveStreamStatus {
+  ARCHIVED
+  DRAFT
+  ENDED
+  ON_AIR
+  SCHEDULED
+  STANDBY
+}
+
+"""ライブ配信の視聴者（LISTENユーザーまたはゲスト）"""
+union LiveStreamViewer = LiveStreamGuest | User
+
+type Me implements UserBase {
+  cookie: Cookie!
+  createdAt: String
+  description: String
+  email: String!
+  episodeReviews(
+    """Limits number of fetched items."""
+    first: Int!
+
+    """The offset from which items are returned."""
+    page: Int
+  ): EpisodeReviewSimplePaginator!
+  followingEpisodes(
+    """Limits number of fetched items."""
+    first: Int!
+
+    """The offset from which items are returned."""
+    page: Int
+  ): EpisodeSimplePaginator!
+  followingPodcasts(
+    """Limits number of fetched items."""
+    first: Int!
+
+    """The offset from which items are returned."""
+    page: Int
+  ): PodcastSimplePaginator!
+  followingPodcastsCount: Int!
+  id: ID!
+  imageUrl: String!
+  imageUrl80: String!
+  imageUrl300: String!
+  imageUrl600: String!
+  imageUrl1200: String!
+  name: String!
+  playbackHistoryEpisodes(
+    """Limits number of fetched items."""
+    first: Int!
+
+    """The offset from which items are returned."""
+    page: Int
+  ): EpisodeSimplePaginator!
+  playbackRate: Float!
+  playlists: [Playlist!]!
+  publicPodcasts(
+    """Limits number of fetched items."""
+    first: Int!
+
+    """The offset from which items are returned."""
+    page: Int
+  ): PodcastSimplePaginator!
+  pushNotificationEnabled: Boolean!
+  recommendedEpisodes(
+    """Limits number of fetched items."""
+    first: Int!
+
+    """The offset from which items are returned."""
+    page: Int
+  ): EpisodeSimplePaginator!
+  timezone: String
+  updatedAt: String
+  username: String!
+  verifiedPodcasts(first: Int!, page: Int): PodcastSimplePaginator!
+  webviewUrl: String!
+}
+
+enum MediaType {
+  AUDIO
+  IMAGE
+}
+
+type Mention {
+  createdAt: String
+  id: ID!
+  mentionableId: String!
+  mentionableType: String!
+  mentionerId: String!
+  mentionerType: String!
+  updatedAt: String
+}
+
+type Message {
+  body: String!
+  createdAt: String
+  episode: Episode
+  id: ID!
+  podcast: Podcast!
+  sentByPodcast: Boolean!
+  updatedAt: String
+  user: User!
+}
+
+type MessageStar {
+  createdAt: String
+  id: ID!
+  message: Message!
+  podcast: Podcast
+  updatedAt: String
+  user: User
+}
+
+type Mutation {
+  addComment(body: String!, episodeId: ID!, replyTo: ID): Episode!
+  addCommentStar(commentId: ID!): Comment!
+  addStar(episodeId: ID!): Episode!
+
+  """Create a new podcast episode using uploaded media files."""
+  createEpisode(
+    """Path to the temporary audio file returned by uploadEpisodeMedia"""
+    audioPath: String!
+    description: String
+    episodeNumber: Int
+
+    """Path to the temporary image file returned by uploadEpisodeMedia"""
+    imagePath: String
+    normalizeLoudness: Boolean
+    podcastId: ID!
+    scheduledAt: String
+    seasonNumber: Int
+    status: EpisodeStatus
+    title: String!
+    visibility: EpisodeVisibilityType!
+  ): Episode!
+
+  """Create a new guest starring for an episode."""
+  createGuestStarring(episodeId: ID!, guestEmail: String, guestId: ID, guestName: String, imagePath: String, role: String!, speakers: [Int!]): Episode!
+  createPodcast(author: String!, category: PodcastCategoryInput!, description: String!, email: String!, explicit: Boolean, imagePath: String!, title: String!, urlName: String!): Podcast!
+
+  """Create a presigned URL for direct S3 upload."""
+  createPresignedUploadUrl(contentType: String, fileName: String!, type: MediaType!): PresignedUpload!
+  deleteComment(commentId: ID!): Episode!
+  deleteEpisode(id: ID!): Podcast!
+  deleteGuestStarring(id: ID!): Episode!
+  followPodcast(podcastId: ID!): Podcast!
+  markAllNotificationsAsRead: [Notification!]!
+
+  """視聴者として存在を記録（ログイン不要・30秒ごとに呼ぶ）"""
+  recordLiveStreamPresence(liveStreamUuid: String!): LiveStream!
+  reportContent(reason: String, url: String!): ReportResult!
+  saveFcmToken(input: SaveFcmTokenInput!): Boolean!
+
+  """チャットメッセージを送信（ログイン必須）"""
+  sendLiveStreamChatMessage(body: String!, liveStreamUuid: String!): LiveStreamChatMessage!
+  toggleFollowPodcast(podcastId: ID!): Podcast!
+  unfollowPodcast(podcastId: ID!): Podcast!
+
+  """Update an existing podcast episode."""
+  updateEpisode(
+    """
+    Path to the temporary audio file returned by uploadEpisodeMedia (provides new audio)
+    """
+    audioPath: String
+    description: String
+    episodeNumber: Int
+    id: ID!
+
+    """
+    Path to the temporary image file returned by uploadEpisodeMedia (optional, provides new image)
+    """
+    imagePath: String
+    normalizeLoudness: Boolean
+    scheduledAt: String
+    seasonNumber: Int
+    starrings: [EpisodeStarringUpdateInput!]
+    status: EpisodeStatus
+    title: String!
+    visibility: EpisodeVisibilityType!
+  ): Episode!
+  updateGuestStarring(guestName: String, id: ID!, imagePath: String, role: String, speakers: [Int!]): Episode!
+  updatePlaybackPosition(episodeId: ID!, isCompleted: Boolean, position: Float!): Episode!
+  updateUserPlaybackRate(newRate: Float!): User!
+}
+
+type Notification {
+  createdAt: String!
+  id: String!
+  image: String!
+  link: String!
+  message: String!
+  modelType: NotificationModelType!
+  readAt: String
+  type: NotificationType!
+  updatedAt: String!
+}
+
+enum NotificationModelType {
+  Episode
+  LiveStream
+  Playlist
+  Podcast
+  Unknown
+  User
+}
+
+type NotificationReadResult {
+  count: Int!
+}
+
+type NotificationSetting {
+  commentAdded: Boolean!
+  commentAddedCommentUser: Boolean!
+  createdAt: String
+  episodeAdded: Boolean!
+  episodeMentioned: Boolean!
+  followerAdded: Boolean!
+  id: ID!
+  messageAdded: Boolean!
+  playlistAdded: Boolean!
+  podcastMentioned: Boolean!
+  purchaseCompleted: Boolean!
+  purchaseCompletedAdmin: Boolean!
+  starringAdded: Boolean!
+  transcriptAdded: Boolean!
+  updatedAt: String
+  user: User!
+}
+
+"""A paginated list of Notification items."""
+type NotificationSimplePaginator {
+  """A list of Notification items."""
+  data: [Notification!]!
+
+  """Pagination information about the list of items."""
+  paginatorInfo: SimplePaginatorInfo!
+}
+
+enum NotificationType {
+  CommentAdded
+  CommentAddedCommentUser
+  EpisodeAdded
+  EventTicketPurchased
+  FollowerAdded
+  LiveStreamStarted
+  MessageAdded
+  PlaylistAdded
+  PurchaseCompleted
+  PurchaseCompletedAdmin
+  StarAdded
+  StarringAdded
+  TranscriptAdded
+  Unknown
+}
+
+"""Allows ordering a list of records."""
+input OrderByClause {
+  """The column that is used for ordering."""
+  column: String!
+
+  """The direction that is used for ordering."""
+  order: SortOrder!
+}
+
+"""
+Aggregate functions when ordering by a relation without specifying a column.
+"""
+enum OrderByRelationAggregateFunction {
+  """Amount of items."""
+  COUNT
+}
+
+"""
+Aggregate functions when ordering by a relation that may specify a column.
+"""
+enum OrderByRelationWithColumnAggregateFunction {
+  """Average."""
+  AVG
+
+  """Amount of items."""
+  COUNT
+
+  """Maximum."""
+  MAX
+
+  """Minimum."""
+  MIN
+
+  """Sum."""
+  SUM
+}
+
+type PasswordReset {
+  createdAt: String
+  email: String!
+  token: String!
+}
+
+type PersonalAccessToken {
+  abilities: String
+  createdAt: String
+  expiresAt: String
+  id: ID!
+  lastUsedAt: String
+  name: String!
+  token: String!
+  tokenableType: String!
+  updatedAt: String
+  user: User!
+}
+
+enum Platform {
+  ANDROID
+  IOS
+  WEB
+}
+
+type PlaybackPosition {
+  createdAt: String
+  episode: Episode!
+  id: ID!
+  isCompleted: Boolean!
+  podcast: Podcast!
+  position: Float!
+  updatedAt: String
+  user: User
+}
+
+type Playlist {
+  createdAt: String
+  description: String
+  episodes(
+    """Limits number of fetched items."""
+    first: Int!
+
+    """The offset from which items are returned."""
+    page: Int
+  ): EpisodeSimplePaginator!
+  id: ID!
+  imageUrl: String!
+  imageUrl80: String!
+  imageUrl300: String!
+  imageUrl600: String!
+  imageUrl1200: String!
+  podcasts(
+    """Limits number of fetched items."""
+    first: Int!
+
+    """The offset from which items are returned."""
+    page: Int
+  ): PodcastSimplePaginator!
+  title: String!
+  updatedAt: String
+  visibility: String!
+}
+
+type PlaylistItem {
+  createdAt: String
+  id: ID!
+  playlist: Playlist!
+  playlistableId: String!
+  playlistableType: String!
+  updatedAt: String
+}
+
+type PlaylistUser {
+  createdAt: String
+  id: ID!
+  isOwner: Boolean!
+  order: Int
+  playlist: Playlist!
+  updatedAt: String
+  user: User!
+}
+
+type Podcast {
+  accessCode: String
+  author: String
+  category: String
+  createdAt: String
+  description: String
+  email: String
+  episodes(
+    """Limits number of fetched items."""
+    first: Int!
+
+    """The offset from which items are returned."""
+    page: Int
+    sort: EpisodeSort
+    status: EpisodeStatus = PUBLISHED
+  ): EpisodeSimplePaginator!
+  etag: String
+  explicit: Boolean!
+  followers: [User!]!
+  guestStarrings: [PodcastStarring!]!
+  hostStarrings: [PodcastStarring!]!
+  hostedByListen: Boolean!
+  id: String!
+  imageUrl: String!
+  imageUrl80: String!
+  imageUrl300: String!
+  imageUrl600: String!
+  imageUrl1200: String!
+  isFollowing: Boolean!
+  language: String
+  latestEpisodePubDate: String
+  link: String
+
+  """ポッドキャストのライブ配信一覧（statusで絞り込み可能）"""
+  liveStreams(status: LiveStreamStatus): [LiveStream!]!
+  name: String
+  ownerVerified: Boolean!
+  owners: [User!]!
+  pinnedEpisode: Episode
+  sellerUser: User
+  title: String
+  transcriptionVisibility: String!
+  updatedAt: String
+  user: User @deprecated(reason: "Use 'owners' field instead. This field will be removed in a future version.")
+  userSetting: UserPodcastSetting
+  visibility: PodcastVisibilityType!
+  webviewUrl: String!
+}
+
+input PodcastCategoryInput {
+  main: String!
+  sub: String
+}
+
+type PodcastOwner {
+  createdAt: String
+  id: ID!
+  isAdmin: Boolean!
+  podcast: Podcast!
+  token: String
+  updatedAt: String
+  user: User!
+  verifiedAt: String
+}
+
+"""A paginated list of Podcast items."""
+type PodcastSimplePaginator {
+  """A list of Podcast items."""
+  data: [Podcast!]!
+
+  """Pagination information about the list of items."""
+  paginatorInfo: SimplePaginatorInfo!
+}
+
+type PodcastStarring {
+  episodeCount: Int!
+  guest: Guest!
+  latestEpisodeDate: String
+}
+
+type PodcastView {
+  activeUsers: Int!
+  date: String!
+  engagements: Int!
+  episode: Episode
+  id: ID!
+  pageViews: Int!
+  podcast: Podcast!
+}
+
+enum PodcastVisibilityType {
+  FOLLOWERS_ONLY
+  LIMITED
+  PRIVATE
+  PUBLIC
+}
+
+input PodcastWithEpisodesInput {
+  episodesLimit: Int
+  id: String!
+}
+
+type Post {
+  authorId: ID!
+  body: String
+  coverImage: String
+  createdAt: String
+  id: ID!
+  pubDate: String
+  status: String!
+  tags: [PostTag!]!
+  title: String!
+  updatedAt: String
+}
+
+type PostTag {
+  postId: ID!
+  tag: Tag!
+}
+
+type PresignedUpload {
+  path: String!
+  publicUrl: String!
+  uploadUrl: String!
+}
+
+type Purchase {
+  createdAt: String
+  episode: Episode!
+  id: ID!
+  podcast: Podcast!
+  price: Float!
+  sellerUser: User!
+  stripePaymentIntentId: String
+  updatedAt: String
+  user: User!
+}
+
+type Query {
+  categories: [Category!]!
+  category(id: ID!): Category!
+  comment(id: ID!): Comment
+  episode(id: String!): Episode
+  episodes(ids: [ID!]!): [Episode!]!
+  home: Home!
+  liveStream(uuid: String!): LiveStream
+  me: Me
+  modelByUrl(url: String!): URLModelType
+  notifications(
+    """Limits number of fetched items."""
+    first: Int!
+
+    """The offset from which items are returned."""
+    page: Int
+    service: String
+  ): NotificationSimplePaginator!
+  playlist(id: ID!): Playlist
+  podcast(id: String!): Podcast
+  podcastsWithEpisodes(inputs: [PodcastWithEpisodesInput!]!): [Podcast!]!
+  searchPodcasts(query: String!): [Podcast!]!
+  searchTags(query: String!): [Tag!]!
+  searchUsers(query: String!): [User!]!
+  tag(id: ID!): Tag
+  user(id: ID!): User
+}
+
+type ReportResult {
+  message: String!
+  success: Boolean!
+}
+
+input SaveFcmTokenInput {
+  platform: Platform!
+  token: String!
+}
+
+type Session {
+  id: String!
+  ipAddress: String
+  lastActivity: Int!
+  payload: String!
+  user: User
+  userAgent: String
+}
+
+"""Information about pagination using a simple paginator."""
+type SimplePaginatorInfo {
+  """Number of items in the current page."""
+  count: Int!
+
+  """Index of the current page."""
+  currentPage: Int!
+
+  """Index of the first item in the current page."""
+  firstItem: Int
+
+  """Are there more pages after this one?"""
+  hasMorePages: Boolean!
+
+  """Index of the last item in the current page."""
+  lastItem: Int
+
+  """Number of items per page."""
+  perPage: Int!
+}
+
+"""Directions for ordering a list of records."""
+enum SortOrder {
+  """Sort records in ascending order."""
+  ASC
+
+  """Sort records in descending order."""
+  DESC
+}
+
+type Star {
+  createdAt: String
+  episode: Episode!
+  id: ID!
+  updatedAt: String
+  user: User!
+}
+
+type Starring {
+  createdAt: String
+  episode: Episode!
+  guest: Guest!
+  id: ID!
+  podcast: Podcast!
+  role: String!
+  speakingPercentage: Float
+  updatedAt: String
+}
+
+type Subscription {
+  """チャットに新メッセージが届いた時（Listen + YouTube両方）"""
+  liveStreamChatMessageAdded(liveStreamUuid: String!): LiveStreamChatMessage @deprecated(reason: "Use Reverb public channel live-stream.{id} with event live-stream.comment.added instead")
+
+  """配信ステータスが変わった時（scheduled→on_air、on_air→ended など）"""
+  liveStreamStatusUpdated(liveStreamUuid: String!): LiveStream @deprecated(reason: "Use Reverb public channel live-stream.{id} with event live-stream.status.updated instead")
+}
+
+type Tag {
+  createdAt: String
+  episodes(
+    """Limits number of fetched items."""
+    first: Int!
+
+    """The offset from which items are returned."""
+    page: Int
+  ): EpisodeSimplePaginator!
+  id: ID!
+  updatedAt: String
+  word: String!
+}
+
+type Transcript {
+  body: String
+  chapters: String
+  createdAt: String
+  diarization: String
+  episode: Episode!
+  podcast: Podcast!
+  summary: String
+  updatedAt: String
+}
+
+"""
+Specify if you want to include or exclude trashed results from a query.
+"""
+enum Trashed {
+  """Only return trashed results."""
+  ONLY
+
+  """Return both trashed and non-trashed results."""
+  WITH
+
+  """Only return non-trashed results."""
+  WITHOUT
+}
+
+union URLModelType = Comment | Episode | LiveStream | Playlist | Podcast | User
+
+"""A file that is uploaded as part of the mutation."""
+scalar Upload
+
+type User implements UserBase {
+  description: String
+  followingPodcasts(
+    """Limits number of fetched items."""
+    first: Int!
+
+    """The offset from which items are returned."""
+    page: Int
+  ): PodcastSimplePaginator!
+  followingPodcastsCount: Int!
+  id: ID!
+  imageUrl: String!
+  imageUrl80: String!
+  imageUrl300: String!
+  imageUrl600: String!
+  imageUrl1200: String!
+  name: String!
+  publicPodcasts(
+    """Limits number of fetched items."""
+    first: Int!
+
+    """The offset from which items are returned."""
+    page: Int
+  ): PodcastSimplePaginator!
+  username: String!
+  webviewUrl: String!
+}
+
+interface UserBase {
+  description: String
+  episodeReviews(
+    """Limits number of fetched items."""
+    first: Int!
+
+    """The offset from which items are returned."""
+    page: Int
+  ): EpisodeReviewSimplePaginator!
+  followingPodcasts(
+    """Limits number of fetched items."""
+    first: Int!
+
+    """The offset from which items are returned."""
+    page: Int
+  ): PodcastSimplePaginator!
+  followingPodcastsCount: Int!
+  id: ID!
+  imageUrl: String!
+  imageUrl80: String!
+  imageUrl300: String!
+  imageUrl600: String!
+  imageUrl1200: String!
+  name: String!
+  publicPodcasts(
+    """Limits number of fetched items."""
+    first: Int!
+
+    """The offset from which items are returned."""
+    page: Int
+  ): PodcastSimplePaginator!
+  username: String!
+  webviewUrl: String!
+}
+
+type UserPodcastSetting {
+  createdAt: String
+  id: ID!
+  normalizeLoudness: Boolean!
+  playbackRate: Float!
+  podcast: Podcast!
+  reduceNoise: Boolean!
+  updatedAt: String
+  user: User!
+}
