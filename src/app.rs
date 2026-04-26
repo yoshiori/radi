@@ -21,6 +21,7 @@ const RECENT_REFRESH_INTERVAL: Duration = Duration::from_millis(750);
 pub struct RecentRecording {
     pub path: PathBuf,
     pub size: String,
+    pub duration: String,
     pub timestamp: String,
 }
 
@@ -318,13 +319,36 @@ fn scan_recent(dir: &Path) -> Vec<RecentRecording> {
                     dt.format("%m-%d %H:%M").to_string()
                 })
                 .unwrap_or_else(|| "—".to_string());
+            let duration = format_mp3_duration(&path);
             RecentRecording {
                 path,
                 size: format_size(size_bytes),
+                duration,
                 timestamp,
             }
         })
         .collect()
+}
+
+/// Parse the mp3 at `path` and format its playback duration into a fixed
+/// 7-cell column string so the Recent panel stays aligned.
+/// Returns a placeholder on parse failure rather than propagating the error
+/// — a single corrupt file shouldn't blank the whole panel.
+fn format_mp3_duration(path: &Path) -> String {
+    match mp3_duration::from_path(path) {
+        Ok(d) => {
+            let total = d.as_secs();
+            let h = total / 3600;
+            let m = (total % 3600) / 60;
+            let s = total % 60;
+            if h == 0 {
+                format!("{m:>4}:{s:02}")
+            } else {
+                format!("{h}:{m:02}:{s:02}")
+            }
+        }
+        Err(_) => "     --".to_string(),
+    }
 }
 
 pub(crate) fn format_size(bytes: u64) -> String {
@@ -436,5 +460,40 @@ mod tests {
         // device_name is Some if an input device exists, None otherwise
         // On CI without audio devices it may be None, so just verify the field exists
         let _ = &app.device_name;
+    }
+
+    #[test]
+    fn scan_recent_includes_playback_duration() {
+        // Encode a real (~1s) mp3 via the same writer the app uses, scan the
+        // dir, and confirm scan_recent surfaces a parsed duration string in a
+        // shape the Recent panel's fixed-width column can render.
+        let dir = std::env::temp_dir().join("radi_test_recent_duration");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let mp3 = dir.join("recording_test.mp3");
+
+        {
+            let mut writer = Mp3Writer::new(&mp3).unwrap();
+            // 48 kHz mono, ~1 second of silence — matches the encoder config.
+            let silence = vec![0.0f32; 48_000];
+            writer.write_samples(&silence).unwrap();
+            writer.finish().unwrap();
+        }
+
+        let recent = scan_recent(&dir);
+        assert_eq!(recent.len(), 1);
+        let entry = &recent[0];
+        assert!(
+            entry.duration.contains(':'),
+            "duration should be formatted as m:ss / h:mm:ss, got {:?}",
+            entry.duration
+        );
+        assert_ne!(
+            entry.duration.trim(),
+            "--",
+            "duration parse should not have fallen back to placeholder"
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
     }
 }

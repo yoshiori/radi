@@ -701,6 +701,10 @@ fn format_recent_line(rec: &RecentRecording, is_current: bool) -> Line<'_> {
             format!("{:>9}  ", rec.size),
             Style::default().fg(ACCENT_DIM),
         ),
+        Span::styled(
+            format!("{:>7}  ", rec.duration),
+            Style::default().fg(ACCENT_DIM),
+        ),
         Span::styled(name.to_string(), name_style),
     ])
 }
