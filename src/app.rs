@@ -23,6 +23,10 @@ pub struct RecentRecording {
     pub size: String,
     pub duration: String,
     pub timestamp: String,
+    /// LISTEN upload metadata, if a sidecar JSON exists next to the mp3.
+    /// Loaded best-effort: a missing or corrupt sidecar leaves this `None`
+    /// rather than dropping the row from the panel entirely.
+    pub episode: Option<EpisodeMetadata>,
 }
 
 use crate::audio::denoiser::Denoiser;
@@ -30,6 +34,7 @@ use crate::audio::encoder::Mp3Writer;
 use crate::audio::recorder::{self, Recorder};
 use crate::config::ListenConfig;
 use crate::upload::listen::{EpisodeSpec, EpisodeStatus, ListenClient, Visibility};
+use crate::upload::metadata::{self, EpisodeMetadata};
 use crate::upload::progress::UploadProgress;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -220,6 +225,12 @@ impl App {
                 status: EpisodeStatus::Draft,
             };
             let episode = client.upload_episode_with_progress(spec, &upload_path, &progress)?;
+            // Sidecar write is best-effort: the episode is already live on
+            // LISTEN at this point, so a local FS hiccup must not flip the
+            // upload result to failed. The recording will simply show up in
+            // Recent without a title until re-uploaded.
+            let _ =
+                metadata::record_upload(&upload_path, &episode.id, &title, &episode.webview_url);
             Ok(episode.webview_url)
         });
 
@@ -320,11 +331,13 @@ fn scan_recent(dir: &Path) -> Vec<RecentRecording> {
                 })
                 .unwrap_or_else(|| "—".to_string());
             let duration = format_mp3_duration(&path);
+            let episode = metadata::read(&path);
             RecentRecording {
                 path,
                 size: format_size(size_bytes),
                 duration,
                 timestamp,
+                episode,
             }
         })
         .collect()
@@ -493,6 +506,48 @@ mod tests {
             "--",
             "duration parse should not have fallen back to placeholder"
         );
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn scan_recent_attaches_episode_metadata_when_sidecar_exists() {
+        let dir = std::env::temp_dir().join("radi_test_recent_episode_meta");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let mp3 = dir.join("recording_test.mp3");
+
+        {
+            let mut writer = Mp3Writer::new(&mp3).unwrap();
+            let silence = vec![0.0f32; 48_000];
+            writer.write_samples(&silence).unwrap();
+            writer.finish().unwrap();
+        }
+
+        let meta = EpisodeMetadata {
+            episode_id: "ep_test".into(),
+            title: "Test title".into(),
+            webview_url: "https://listen.style/p/x/ep_test".into(),
+            uploaded_at: "2026-05-01T00:00:00+09:00".into(),
+        };
+        metadata::write(&mp3, &meta).unwrap();
+
+        let recent = scan_recent(&dir);
+        assert_eq!(recent.len(), 1);
+        assert_eq!(recent[0].episode.as_ref(), Some(&meta));
+
+        // Plain mp3 with no sidecar → episode stays None, doesn't drop the row.
+        let mp3b = dir.join("recording_no_meta.mp3");
+        {
+            let mut writer = Mp3Writer::new(&mp3b).unwrap();
+            let silence = vec![0.0f32; 48_000];
+            writer.write_samples(&silence).unwrap();
+            writer.finish().unwrap();
+        }
+        let recent = scan_recent(&dir);
+        assert_eq!(recent.len(), 2);
+        let no_meta = recent.iter().find(|r| r.path == mp3b).unwrap();
+        assert!(no_meta.episode.is_none());
 
         std::fs::remove_dir_all(&dir).ok();
     }

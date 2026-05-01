@@ -676,7 +676,15 @@ fn render_recent(frame: &mut Frame, area: Rect, app: &App, accent: Color) {
 }
 
 fn format_recent_line(rec: &RecentRecording, is_current: bool) -> Line<'_> {
-    let name = rec.path.file_name().and_then(|s| s.to_str()).unwrap_or("?");
+    let filename = rec.path.file_name().and_then(|s| s.to_str()).unwrap_or("?");
+    // Prefer the LISTEN title once a sidecar exists — once a recording is
+    // uploaded the human-meaningful name is the episode title, not the
+    // timestamped filename. Falls back to the filename otherwise.
+    let label = rec
+        .episode
+        .as_ref()
+        .map(|e| e.title.as_str())
+        .unwrap_or(filename);
     let marker = if is_current { "▸ " } else { "  " };
     let marker_style = if is_current {
         Style::default().fg(REC).add_modifier(Modifier::BOLD)
@@ -689,6 +697,12 @@ fn format_recent_line(rec: &RecentRecording, is_current: bool) -> Line<'_> {
             .add_modifier(Modifier::BOLD)
     } else {
         Style::default().fg(Color::Gray)
+    };
+    // Two-cell slot so uploaded vs. not stays vertically aligned across rows.
+    let (badge, badge_style) = if rec.episode.is_some() {
+        ("↑ ", Style::default().fg(OK).add_modifier(Modifier::BOLD))
+    } else {
+        ("  ", Style::default().fg(ACCENT_DIM))
     };
 
     Line::from(vec![
@@ -705,7 +719,8 @@ fn format_recent_line(rec: &RecentRecording, is_current: bool) -> Line<'_> {
             format!("{:>7}  ", rec.duration),
             Style::default().fg(ACCENT_DIM),
         ),
-        Span::styled(name.to_string(), name_style),
+        Span::styled(badge, badge_style),
+        Span::styled(label.to_string(), name_style),
     ])
 }
 
@@ -810,6 +825,7 @@ fn format_duration(d: std::time::Duration) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::upload::metadata::EpisodeMetadata;
 
     #[test]
     fn upload_label_shows_percent_and_sizes() {
@@ -831,5 +847,51 @@ mod tests {
         // Defensively clamp in case a race lets uploaded briefly exceed total.
         let s = format_upload_label(10, 5);
         assert!(s.contains("100%"), "got: {s}");
+    }
+
+    fn rec_with_episode(episode: Option<EpisodeMetadata>) -> RecentRecording {
+        RecentRecording {
+            path: std::path::PathBuf::from("/tmp/recording_2026.mp3"),
+            size: "1 KB".into(),
+            duration: "0:01".into(),
+            timestamp: "05-01 12:34".into(),
+            episode,
+        }
+    }
+
+    fn line_text(line: &Line) -> String {
+        line.spans.iter().map(|s| s.content.as_ref()).collect()
+    }
+
+    #[test]
+    fn recent_line_uses_filename_when_no_episode() {
+        let rec = rec_with_episode(None);
+        let line = format_recent_line(&rec, false);
+        let text = line_text(&line);
+        assert!(text.contains("recording_2026.mp3"), "got: {text}");
+        // No upload badge for un-uploaded rows.
+        assert!(!text.contains('↑'), "got: {text}");
+    }
+
+    #[test]
+    fn recent_line_uses_episode_title_and_badge_when_uploaded() {
+        let meta = EpisodeMetadata {
+            episode_id: "ep1".into(),
+            title: "Cool Episode".into(),
+            webview_url: "https://listen.style/p/x/ep1".into(),
+            uploaded_at: "2026-05-01T12:34:56+09:00".into(),
+        };
+        let rec = rec_with_episode(Some(meta));
+        let line = format_recent_line(&rec, false);
+        let text = line_text(&line);
+        assert!(
+            text.contains("Cool Episode"),
+            "title should replace filename, got: {text}"
+        );
+        assert!(
+            !text.contains("recording_2026.mp3"),
+            "filename should not leak through alongside the title, got: {text}"
+        );
+        assert!(text.contains('↑'), "uploaded badge missing, got: {text}");
     }
 }
