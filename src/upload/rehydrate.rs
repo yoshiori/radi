@@ -30,7 +30,7 @@ pub fn rehydrate(output_dir: &Path, listen: &ListenConfig) -> Result<usize> {
     let token = listen.required_token()?;
     let client = ListenClient::new(listen.endpoint_or_default(), token)?;
     let ids: Vec<String> = pairs.iter().map(|(_, m)| m.episode_id.clone()).collect();
-    let summaries = client.fetch_episodes(&ids)?;
+    let summaries = client.fetch_episodes(&listen.podcast_id, &ids)?;
 
     // Index server-side summaries so each local sidecar can find its match
     // in O(1). LISTEN may return fewer rows than we asked for (deleted /
@@ -102,14 +102,19 @@ mod tests {
         let mp3b = seed(dir.path(), "b.mp3", "ep_b", "B unchanged");
 
         let mut server = mockito::Server::new();
+        // Both episodes are in the PUBLISHED bucket, so the early-return in
+        // fetch_episodes resolves them in one round-trip.
         let mock = server
             .mock("POST", "/graphql")
             .with_status(200)
             .with_body(
-                r#"{"data":{"episodes":[
-                    {"id":"ep_a","title":"new A","webviewUrl":"https://listen.style/new/ep_a"},
-                    {"id":"ep_b","title":"B unchanged","webviewUrl":"https://listen.style/old/ep_b"}
-                ]}}"#,
+                r#"{"data":{"podcast":{"episodes":{
+                    "paginatorInfo":{"hasMorePages":false},
+                    "data":[
+                        {"id":"ep_a","title":"new A","webviewUrl":"https://listen.style/new/ep_a"},
+                        {"id":"ep_b","title":"B unchanged","webviewUrl":"https://listen.style/old/ep_b"}
+                    ]
+                }}}}"#,
             )
             .create();
 
@@ -155,16 +160,25 @@ mod tests {
 
     #[test]
     fn rehydrate_leaves_sidecar_untouched_when_episode_missing_server_side() {
-        // Episode deleted on LISTEN → fetch returns no row for it → keep
-        // the local sidecar so the user still sees the title they had.
+        // Episode deleted on LISTEN → every status bucket comes back empty
+        // → fetch_episodes returns no summary for it → keep the local
+        // sidecar so the user still sees the title they had.
         let dir = TestDir::new("radi_test_rehydrate_missing_server");
         let mp3 = seed(dir.path(), "gone.mp3", "ep_gone", "still here");
 
         let mut server = mockito::Server::new();
+        // One mock matching all three status passes; expect_at_least(1)
+        // tolerates the per-status loop without pinning to an exact count.
         let _m = server
             .mock("POST", "/graphql")
+            .expect_at_least(1)
             .with_status(200)
-            .with_body(r#"{"data":{"episodes":[]}}"#)
+            .with_body(
+                r#"{"data":{"podcast":{"episodes":{
+                    "paginatorInfo":{"hasMorePages":false},
+                    "data":[]
+                }}}}"#,
+            )
             .create();
 
         let listen = ListenConfig {
