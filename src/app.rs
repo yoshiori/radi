@@ -663,9 +663,12 @@ mod tests {
             .mock("POST", "/graphql")
             .with_status(200)
             .with_body(
-                r#"{"data":{"episodes":[
-                    {"id":"ep_w","title":"new","webviewUrl":"https://listen.style/new"}
-                ]}}"#,
+                r#"{"data":{"podcast":{"episodes":{
+                    "paginatorInfo":{"hasMorePages":false},
+                    "data":[
+                        {"id":"ep_w","title":"new","webviewUrl":"https://listen.style/new"}
+                    ]
+                }}}}"#,
             )
             .create();
 

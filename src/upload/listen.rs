@@ -34,15 +34,30 @@ mutation($podcastId: ID!, $title: String!, $description: String,
 }
 "#;
 
-const FETCH_EPISODES_QUERY: &str = r#"
-query($ids: [ID!]!) {
-  episodes(ids: $ids) {
-    id
-    title
-    webviewUrl
+// LISTEN's API token does not authorize the top-level `episode(id:)` /
+// `episodes(ids:)` queries (verified empirically: those return
+// `"This action is unauthorized."` even with a valid token whose `me`
+// query succeeds). The owner-scoped `podcast(id:).episodes` field, on the
+// other hand, *is* allowed for the podcast's owner — so we list episodes
+// under the configured podcast and filter client-side for the ids we care
+// about. `status` defaults to PUBLISHED in the schema, so we explicitly
+// iterate all three states to also surface drafts and scheduled rows.
+const FETCH_PODCAST_EPISODES_QUERY: &str = r#"
+query($podcastId: String!, $page: Int, $status: EpisodeStatus) {
+  podcast(id: $podcastId) {
+    episodes(first: 100, page: $page, status: $status) {
+      paginatorInfo { hasMorePages }
+      data {
+        id
+        title
+        webviewUrl
+      }
+    }
   }
 }
 "#;
+
+const EPISODE_STATUSES: &[&str] = &["PUBLISHED", "DRAFT", "SCHEDULED"];
 
 #[derive(Debug, Clone, Copy)]
 pub enum Visibility {
@@ -206,32 +221,79 @@ impl ListenClient {
         Ok(())
     }
 
-    /// Look up a batch of episodes by id. Used by the startup rehydrate pass
-    /// to refresh local sidecars when the LISTEN-side title or webview URL
-    /// has been edited after the upload. Returns only episodes the server
-    /// acknowledged — entries deleted (or not visible to this token) drop
-    /// out silently, and the caller leaves the corresponding sidecar alone.
-    pub fn fetch_episodes(&self, ids: &[String]) -> anyhow::Result<Vec<EpisodeSummary>> {
+    /// Look up a batch of episodes by id, scoped to `podcast_id`. Used by the
+    /// startup rehydrate pass to refresh local sidecars when the LISTEN-side
+    /// title or webview URL has been edited after the upload. Returns only
+    /// episodes the server acknowledged — entries deleted (or not in this
+    /// podcast) drop out silently, and the caller leaves the corresponding
+    /// sidecar alone.
+    ///
+    /// Implementation: paginates `podcast.episodes` across PUBLISHED, DRAFT
+    /// and SCHEDULED, filtering client-side for the requested ids, and
+    /// stops as soon as every requested id has been resolved.
+    pub fn fetch_episodes(
+        &self,
+        podcast_id: &str,
+        ids: &[String],
+    ) -> anyhow::Result<Vec<EpisodeSummary>> {
         if ids.is_empty() {
             return Ok(Vec::new());
         }
-        let data = self.graphql(FETCH_EPISODES_QUERY, json!({ "ids": ids }))?;
-        let arr = data
-            .get("episodes")
-            .and_then(|v| v.as_array())
-            .ok_or_else(|| anyhow!("response missing episodes array"))?;
-        arr.iter()
-            .map(|node| {
-                Ok(EpisodeSummary {
-                    id: string_field(node, "id")?,
-                    title: node
-                        .get("title")
-                        .and_then(|v| v.as_str())
-                        .map(|s| s.to_string()),
-                    webview_url: string_field(node, "webviewUrl")?,
-                })
-            })
-            .collect()
+        let wanted: std::collections::HashSet<&str> = ids.iter().map(String::as_str).collect();
+        let mut found: Vec<EpisodeSummary> = Vec::new();
+        let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+
+        for status in EPISODE_STATUSES {
+            let mut page: i64 = 1;
+            loop {
+                let data = self.graphql(
+                    FETCH_PODCAST_EPISODES_QUERY,
+                    json!({
+                        "podcastId": podcast_id,
+                        "page": page,
+                        "status": status,
+                    }),
+                )?;
+                let episodes = data
+                    .get("podcast")
+                    .and_then(|p| p.get("episodes"))
+                    .ok_or_else(|| anyhow!("response missing podcast.episodes"))?;
+                let arr = episodes
+                    .get("data")
+                    .and_then(|v| v.as_array())
+                    .ok_or_else(|| anyhow!("response missing podcast.episodes.data"))?;
+
+                for node in arr {
+                    let id = string_field(node, "id")?;
+                    if !wanted.contains(id.as_str()) || !seen.insert(id.clone()) {
+                        continue;
+                    }
+                    found.push(EpisodeSummary {
+                        id,
+                        title: node
+                            .get("title")
+                            .and_then(|v| v.as_str())
+                            .map(|s| s.to_string()),
+                        webview_url: string_field(node, "webviewUrl")?,
+                    });
+                }
+
+                if found.len() == wanted.len() {
+                    return Ok(found);
+                }
+
+                let has_more = episodes
+                    .get("paginatorInfo")
+                    .and_then(|p| p.get("hasMorePages"))
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
+                if !has_more {
+                    break;
+                }
+                page += 1;
+            }
+        }
+        Ok(found)
     }
 
     pub fn create_episode(
@@ -505,33 +567,129 @@ mod tests {
     }
 
     #[test]
-    fn fetch_episodes_parses_summaries() {
+    fn fetch_episodes_parses_summaries_from_published_status() {
+        // Both ids land in PUBLISHED, so early-return short-circuits before
+        // the DRAFT/SCHEDULED rounds — one round-trip is enough to resolve
+        // every requested id.
         let mut server = mockito::Server::new();
         let mock = server
             .mock("POST", "/graphql")
             .match_body(mockito::Matcher::PartialJsonString(
-                r#"{"variables":{"ids":["ep1","ep2"]}}"#.into(),
+                r#"{"variables":{"podcastId":"pod","status":"PUBLISHED"}}"#.into(),
             ))
             .with_status(200)
             .with_body(
-                r#"{"data":{"episodes":[
-                    {"id":"ep1","title":"First","webviewUrl":"https://listen.style/p/x/ep1"},
-                    {"id":"ep2","title":null,"webviewUrl":"https://listen.style/p/x/ep2"}
-                ]}}"#,
+                r#"{"data":{"podcast":{"episodes":{
+                    "paginatorInfo":{"hasMorePages":false},
+                    "data":[
+                        {"id":"ep1","title":"First","webviewUrl":"https://listen.style/p/x/ep1"},
+                        {"id":"ep2","title":null,"webviewUrl":"https://listen.style/p/x/ep2"},
+                        {"id":"other","title":"unrelated","webviewUrl":"https://listen.style/p/x/other"}
+                    ]
+                }}}}"#,
             )
             .create();
 
         let client = ListenClient::new(format!("{}/graphql", server.url()), "t").unwrap();
         let summaries = client
-            .fetch_episodes(&["ep1".into(), "ep2".into()])
+            .fetch_episodes("pod", &["ep1".into(), "ep2".into()])
             .unwrap();
         assert_eq!(summaries.len(), 2);
-        assert_eq!(summaries[0].title.as_deref(), Some("First"));
+        let by_id: std::collections::HashMap<_, _> =
+            summaries.iter().map(|s| (s.id.as_str(), s)).collect();
+        assert_eq!(by_id["ep1"].title.as_deref(), Some("First"));
         // null title from the server should round-trip as None, not "" —
         // otherwise the rehydrate would silently blank out the local title.
-        assert_eq!(summaries[1].title, None);
-        assert_eq!(summaries[1].webview_url, "https://listen.style/p/x/ep2");
+        assert_eq!(by_id["ep2"].title, None);
+        assert_eq!(by_id["ep2"].webview_url, "https://listen.style/p/x/ep2");
         mock.assert();
+    }
+
+    #[test]
+    fn fetch_episodes_falls_through_to_draft_status() {
+        // Episode lives only in DRAFT (e.g. a rec the user un-published on
+        // listen.style) → the PUBLISHED round must come back empty without
+        // breaking the lookup.
+        let mut server = mockito::Server::new();
+        let published = server
+            .mock("POST", "/graphql")
+            .match_body(mockito::Matcher::PartialJsonString(
+                r#"{"variables":{"status":"PUBLISHED"}}"#.into(),
+            ))
+            .with_status(200)
+            .with_body(
+                r#"{"data":{"podcast":{"episodes":{
+                    "paginatorInfo":{"hasMorePages":false},
+                    "data":[]
+                }}}}"#,
+            )
+            .create();
+        let draft = server
+            .mock("POST", "/graphql")
+            .match_body(mockito::Matcher::PartialJsonString(
+                r#"{"variables":{"status":"DRAFT"}}"#.into(),
+            ))
+            .with_status(200)
+            .with_body(
+                r#"{"data":{"podcast":{"episodes":{
+                    "paginatorInfo":{"hasMorePages":false},
+                    "data":[
+                        {"id":"ep_d","title":"draft title","webviewUrl":"https://listen.style/p/x/ep_d"}
+                    ]
+                }}}}"#,
+            )
+            .create();
+
+        let client = ListenClient::new(format!("{}/graphql", server.url()), "t").unwrap();
+        let summaries = client.fetch_episodes("pod", &["ep_d".into()]).unwrap();
+        assert_eq!(summaries.len(), 1);
+        assert_eq!(summaries[0].title.as_deref(), Some("draft title"));
+        published.assert();
+        draft.assert();
+    }
+
+    #[test]
+    fn fetch_episodes_paginates_until_id_resolved() {
+        // Requested id sits on page 2, so a `hasMorePages:true` response on
+        // page 1 must trigger the page-2 request before we give up.
+        let mut server = mockito::Server::new();
+        let p1 = server
+            .mock("POST", "/graphql")
+            .match_body(mockito::Matcher::PartialJsonString(
+                r#"{"variables":{"page":1,"status":"PUBLISHED"}}"#.into(),
+            ))
+            .with_status(200)
+            .with_body(
+                r#"{"data":{"podcast":{"episodes":{
+                    "paginatorInfo":{"hasMorePages":true},
+                    "data":[
+                        {"id":"other","title":"x","webviewUrl":"https://listen.style/p/x/other"}
+                    ]
+                }}}}"#,
+            )
+            .create();
+        let p2 = server
+            .mock("POST", "/graphql")
+            .match_body(mockito::Matcher::PartialJsonString(
+                r#"{"variables":{"page":2,"status":"PUBLISHED"}}"#.into(),
+            ))
+            .with_status(200)
+            .with_body(
+                r#"{"data":{"podcast":{"episodes":{
+                    "paginatorInfo":{"hasMorePages":false},
+                    "data":[
+                        {"id":"ep_late","title":"late","webviewUrl":"https://listen.style/p/x/ep_late"}
+                    ]
+                }}}}"#,
+            )
+            .create();
+
+        let client = ListenClient::new(format!("{}/graphql", server.url()), "t").unwrap();
+        let summaries = client.fetch_episodes("pod", &["ep_late".into()]).unwrap();
+        assert_eq!(summaries.len(), 1);
+        assert_eq!(summaries[0].id, "ep_late");
+        p1.assert();
+        p2.assert();
     }
 
     #[test]
@@ -541,7 +699,7 @@ mod tests {
         let server = mockito::Server::new();
         // Note: no `.mock(...)` registered — any request would 501.
         let client = ListenClient::new(format!("{}/graphql", server.url()), "t").unwrap();
-        let summaries = client.fetch_episodes(&[]).unwrap();
+        let summaries = client.fetch_episodes("pod", &[]).unwrap();
         assert!(summaries.is_empty());
     }
 }
