@@ -7,7 +7,7 @@ use throbber_widgets_tui::{Throbber, ThrobberState};
 use tui_big_text::{BigText, PixelSize};
 use tui_popup::Popup;
 
-use crate::app::{App, AppState, RecentRecording, format_size};
+use crate::app::{App, AppState, RecentRecording, SyncState, format_size};
 use crate::tui::splash;
 use crate::upload::progress::{UploadPhase, UploadProgress};
 
@@ -631,22 +631,51 @@ fn render_level(frame: &mut Frame, area: Rect, app: &App, state: &AppState, acce
     }
 }
 
+/// Trailing spans for the Recent panel title that indicate the rehydrate
+/// pass's current phase. Idle and Done collapse to no spans on purpose:
+/// once the sidecars are up to date the indicator's job is done, and the
+/// rehydrated titles speak for themselves in the rows below.
+fn sync_indicator_spans(state: &SyncState) -> Vec<Span<'static>> {
+    match state {
+        SyncState::Idle | SyncState::Done { .. } => Vec::new(),
+        SyncState::Syncing => vec![
+            upload_throbber_span(ACCENT),
+            Span::raw(" "),
+            Span::styled(
+                "syncing…",
+                Style::default().fg(ACCENT_DIM).add_modifier(Modifier::DIM),
+            ),
+            Span::raw(" "),
+        ],
+        SyncState::Failed(_) => vec![
+            Span::styled("⚠ ", Style::default().fg(WARN).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                "sync failed",
+                Style::default().fg(ACCENT_DIM).add_modifier(Modifier::DIM),
+            ),
+            Span::raw(" "),
+        ],
+    }
+}
+
 fn render_recent(frame: &mut Frame, area: Rect, app: &App, accent: Color) {
     if area.height == 0 {
         return;
     }
+    let mut title_spans = vec![
+        Span::raw(" "),
+        Span::styled("Recent", Style::default().fg(accent).bold()),
+        Span::styled(
+            format!(" ({}) ", app.recent().len()),
+            Style::default().fg(ACCENT_DIM),
+        ),
+    ];
+    title_spans.extend(sync_indicator_spans(&app.sync_state()));
     let block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(ACCENT_DIM))
-        .title(Line::from(vec![
-            Span::raw(" "),
-            Span::styled("Recent", Style::default().fg(accent).bold()),
-            Span::styled(
-                format!(" ({}) ", app.recent().len()),
-                Style::default().fg(ACCENT_DIM),
-            ),
-        ]));
+        .title(Line::from(title_spans));
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
@@ -893,5 +922,45 @@ mod tests {
             "filename should not leak through alongside the title, got: {text}"
         );
         assert!(text.contains('↑'), "uploaded badge missing, got: {text}");
+    }
+
+    fn spans_text(spans: &[Span]) -> String {
+        spans.iter().map(|s| s.content.as_ref()).collect()
+    }
+
+    #[test]
+    fn sync_indicator_idle_renders_nothing() {
+        // Idle = "no sync ever ran"; the user shouldn't see anything that
+        // hints there's a separate state machine running.
+        assert!(sync_indicator_spans(&SyncState::Idle).is_empty());
+    }
+
+    #[test]
+    fn sync_indicator_done_renders_nothing() {
+        // Done collapses too: the rehydrated titles already speak for
+        // themselves in the row list, so a lingering "✓ synced" is noise.
+        assert!(sync_indicator_spans(&SyncState::Done { updated: 0 }).is_empty());
+        assert!(sync_indicator_spans(&SyncState::Done { updated: 5 }).is_empty());
+    }
+
+    #[test]
+    fn sync_indicator_syncing_includes_label() {
+        let spans = sync_indicator_spans(&SyncState::Syncing);
+        let text = spans_text(&spans);
+        assert!(text.contains("syncing"), "got: {text}");
+    }
+
+    #[test]
+    fn sync_indicator_failed_includes_warning_label() {
+        // Don't surface the error string — TUI can't show enough to be
+        // useful, and a long error would push the count off-screen. A
+        // discreet "⚠ sync failed" is enough for the user to know to retry.
+        let spans = sync_indicator_spans(&SyncState::Failed("network: timed out".into()));
+        let text = spans_text(&spans);
+        assert!(text.contains("sync failed"), "got: {text}");
+        assert!(
+            !text.contains("network"),
+            "raw error should not leak into the title bar, got: {text}"
+        );
     }
 }

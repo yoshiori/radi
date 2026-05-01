@@ -10,6 +10,8 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
+use crate::upload::listen::EpisodeSummary;
+
 /// What we know about an mp3 after a successful LISTEN upload.
 ///
 /// `uploaded_at` is stored as RFC 3339 so the file is human-readable and
@@ -46,6 +48,60 @@ pub fn read(mp3_path: &Path) -> Option<EpisodeMetadata> {
     let path = sidecar_path(mp3_path);
     let bytes = std::fs::read(&path).ok()?;
     serde_json::from_slice(&bytes).ok()
+}
+
+/// Walk `dir` for `<name>.mp3.json` sidecars, parse them, and pair each with
+/// the matching mp3 path. Sidecars whose JSON is corrupt or whose mp3 is
+/// missing are silently dropped — a single bad row mustn't poison the whole
+/// rehydrate pass. Returns `(mp3_path, parsed_metadata)` pairs.
+pub fn collect_sidecars(dir: &Path) -> Vec<(PathBuf, EpisodeMetadata)> {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for entry in entries.flatten() {
+        let path = entry.path();
+        // We're looking specifically for `*.mp3.json` so plain `.json` files
+        // a user might have left in the dir don't get parsed as metadata.
+        let Some(name) = path.file_name().and_then(|s| s.to_str()) else {
+            continue;
+        };
+        if !name.ends_with(".mp3.json") {
+            continue;
+        }
+        let mp3_path = PathBuf::from(path.to_string_lossy().trim_end_matches(".json").to_string());
+        if !mp3_path.exists() {
+            continue;
+        }
+        let Ok(bytes) = std::fs::read(&path) else {
+            continue;
+        };
+        let Ok(meta) = serde_json::from_slice::<EpisodeMetadata>(&bytes) else {
+            continue;
+        };
+        out.push((mp3_path, meta));
+    }
+    out
+}
+
+/// Apply a server-side episode summary onto a local sidecar in place. Returns
+/// `true` when something actually changed so callers can avoid spurious
+/// writes (and the noisy timestamps that come with them). `uploaded_at` is
+/// preserved on purpose: it records when *this user* uploaded the file, not
+/// when LISTEN last touched the episode.
+pub fn apply_remote(meta: &mut EpisodeMetadata, summary: &EpisodeSummary) -> bool {
+    let mut changed = false;
+    if let Some(remote_title) = summary.title.as_deref()
+        && remote_title != meta.title
+    {
+        meta.title = remote_title.to_string();
+        changed = true;
+    }
+    if summary.webview_url != meta.webview_url {
+        meta.webview_url = summary.webview_url.clone();
+        changed = true;
+    }
+    changed
 }
 
 /// Build an `EpisodeMetadata` with `uploaded_at` stamped from the local
@@ -168,5 +224,98 @@ mod tests {
         let mp3 = dir.path().join("recording.mp3");
         std::fs::write(sidecar_path(&mp3), b"{not json").unwrap();
         assert!(read(&mp3).is_none());
+    }
+
+    #[test]
+    fn collect_sidecars_returns_pairs_for_valid_entries() {
+        let dir = TestDir::new("radi_test_metadata_collect_pairs");
+        let mp3 = dir.path().join("recording.mp3");
+        std::fs::write(&mp3, b"\xFF\xFB").unwrap(); // arbitrary mp3 bytes; existence is what matters
+        let meta = fixture();
+        write(&mp3, &meta).unwrap();
+
+        let pairs = collect_sidecars(dir.path());
+        assert_eq!(pairs.len(), 1);
+        assert_eq!(pairs[0].0, mp3);
+        assert_eq!(pairs[0].1, meta);
+    }
+
+    #[test]
+    fn collect_sidecars_skips_orphan_sidecar_with_no_mp3() {
+        // mp3 was removed but its sidecar lingered: there's nothing to
+        // attach the rehydrated title to, so dropping the entry is fine.
+        let dir = TestDir::new("radi_test_metadata_collect_orphan");
+        let mp3 = dir.path().join("recording.mp3");
+        write(&mp3, &fixture()).unwrap();
+        // Note: never created mp3 itself.
+        assert!(collect_sidecars(dir.path()).is_empty());
+    }
+
+    #[test]
+    fn collect_sidecars_skips_corrupt_sidecar() {
+        let dir = TestDir::new("radi_test_metadata_collect_corrupt");
+        let mp3 = dir.path().join("recording.mp3");
+        std::fs::write(&mp3, b"\xFF\xFB").unwrap();
+        std::fs::write(sidecar_path(&mp3), b"{not json").unwrap();
+        // Corrupt sidecars must drop out cleanly so a single bad row can't
+        // abort the whole rehydrate scan.
+        assert!(collect_sidecars(dir.path()).is_empty());
+    }
+
+    #[test]
+    fn apply_remote_updates_title_and_url_when_changed() {
+        let mut meta = fixture();
+        let summary = EpisodeSummary {
+            id: meta.episode_id.clone(),
+            title: Some("New title".into()),
+            webview_url: "https://listen.style/p/foo/new".into(),
+        };
+        assert!(apply_remote(&mut meta, &summary));
+        assert_eq!(meta.title, "New title");
+        assert_eq!(meta.webview_url, "https://listen.style/p/foo/new");
+    }
+
+    #[test]
+    fn apply_remote_preserves_uploaded_at() {
+        // uploaded_at records when the local user uploaded the file. The
+        // server's idea of "last touched" is irrelevant to that, so
+        // rehydrate must never overwrite it.
+        let mut meta = fixture();
+        let original_uploaded_at = meta.uploaded_at.clone();
+        let summary = EpisodeSummary {
+            id: meta.episode_id.clone(),
+            title: Some("Edited".into()),
+            webview_url: meta.webview_url.clone(),
+        };
+        apply_remote(&mut meta, &summary);
+        assert_eq!(meta.uploaded_at, original_uploaded_at);
+    }
+
+    #[test]
+    fn apply_remote_returns_false_when_nothing_changed() {
+        // No-op summary should report `false` so the caller can skip the
+        // disk write — otherwise every startup rewrites every sidecar.
+        let mut meta = fixture();
+        let summary = EpisodeSummary {
+            id: meta.episode_id.clone(),
+            title: Some(meta.title.clone()),
+            webview_url: meta.webview_url.clone(),
+        };
+        assert!(!apply_remote(&mut meta, &summary));
+    }
+
+    #[test]
+    fn apply_remote_keeps_local_title_when_remote_title_is_null() {
+        // A null `title` from the server (e.g. transient draft state)
+        // should not blank out the local one.
+        let mut meta = fixture();
+        let original_title = meta.title.clone();
+        let summary = EpisodeSummary {
+            id: meta.episode_id.clone(),
+            title: None,
+            webview_url: meta.webview_url.clone(),
+        };
+        assert!(!apply_remote(&mut meta, &summary));
+        assert_eq!(meta.title, original_title);
     }
 }

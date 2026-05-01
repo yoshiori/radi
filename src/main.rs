@@ -38,6 +38,13 @@ fn run_app(
 ) -> anyhow::Result<()> {
     let mut app = App::new(output_dir.clone());
 
+    // Refresh local sidecars from LISTEN before drawing the first real
+    // frame: titles edited on listen.style after upload should show up
+    // in Recent on next launch, not stay frozen at the upload-time value.
+    if let Some(listen) = listen.clone() {
+        app.start_rehydrate(listen);
+    }
+
     run_splash(terminal, &app)?;
 
     loop {

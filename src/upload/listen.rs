@@ -34,6 +34,16 @@ mutation($podcastId: ID!, $title: String!, $description: String,
 }
 "#;
 
+const FETCH_EPISODES_QUERY: &str = r#"
+query($ids: [ID!]!) {
+  episodes(ids: $ids) {
+    id
+    title
+    webviewUrl
+  }
+}
+"#;
+
 #[derive(Debug, Clone, Copy)]
 pub enum Visibility {
     Public,
@@ -70,6 +80,16 @@ pub struct PresignedUpload {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UploadedEpisode {
     pub id: String,
+    pub webview_url: String,
+}
+
+/// Server-side view of an episode used by the rehydrate pass. `title` is
+/// nullable in LISTEN's schema, so represent that explicitly rather than
+/// silently replacing local data with an empty string.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EpisodeSummary {
+    pub id: String,
+    pub title: Option<String>,
     pub webview_url: String,
 }
 
@@ -184,6 +204,34 @@ impl ListenClient {
             return Err(anyhow!("S3 PUT failed {}: {}", status, text));
         }
         Ok(())
+    }
+
+    /// Look up a batch of episodes by id. Used by the startup rehydrate pass
+    /// to refresh local sidecars when the LISTEN-side title or webview URL
+    /// has been edited after the upload. Returns only episodes the server
+    /// acknowledged — entries deleted (or not visible to this token) drop
+    /// out silently, and the caller leaves the corresponding sidecar alone.
+    pub fn fetch_episodes(&self, ids: &[String]) -> anyhow::Result<Vec<EpisodeSummary>> {
+        if ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let data = self.graphql(FETCH_EPISODES_QUERY, json!({ "ids": ids }))?;
+        let arr = data
+            .get("episodes")
+            .and_then(|v| v.as_array())
+            .ok_or_else(|| anyhow!("response missing episodes array"))?;
+        arr.iter()
+            .map(|node| {
+                Ok(EpisodeSummary {
+                    id: string_field(node, "id")?,
+                    title: node
+                        .get("title")
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_string()),
+                    webview_url: string_field(node, "webviewUrl")?,
+                })
+            })
+            .collect()
     }
 
     pub fn create_episode(
@@ -454,5 +502,46 @@ mod tests {
             .unwrap();
         assert_eq!(ep.id, "ep123");
         mock.assert();
+    }
+
+    #[test]
+    fn fetch_episodes_parses_summaries() {
+        let mut server = mockito::Server::new();
+        let mock = server
+            .mock("POST", "/graphql")
+            .match_body(mockito::Matcher::PartialJsonString(
+                r#"{"variables":{"ids":["ep1","ep2"]}}"#.into(),
+            ))
+            .with_status(200)
+            .with_body(
+                r#"{"data":{"episodes":[
+                    {"id":"ep1","title":"First","webviewUrl":"https://listen.style/p/x/ep1"},
+                    {"id":"ep2","title":null,"webviewUrl":"https://listen.style/p/x/ep2"}
+                ]}}"#,
+            )
+            .create();
+
+        let client = ListenClient::new(format!("{}/graphql", server.url()), "t").unwrap();
+        let summaries = client
+            .fetch_episodes(&["ep1".into(), "ep2".into()])
+            .unwrap();
+        assert_eq!(summaries.len(), 2);
+        assert_eq!(summaries[0].title.as_deref(), Some("First"));
+        // null title from the server should round-trip as None, not "" —
+        // otherwise the rehydrate would silently blank out the local title.
+        assert_eq!(summaries[1].title, None);
+        assert_eq!(summaries[1].webview_url, "https://listen.style/p/x/ep2");
+        mock.assert();
+    }
+
+    #[test]
+    fn fetch_episodes_with_empty_ids_skips_request() {
+        // No ids means no HTTP request: avoids a guaranteed-empty round trip
+        // (and doubles as a guard for dropping a `[]` into a non-null arg).
+        let server = mockito::Server::new();
+        // Note: no `.mock(...)` registered — any request would 501.
+        let client = ListenClient::new(format!("{}/graphql", server.url()), "t").unwrap();
+        let summaries = client.fetch_episodes(&[]).unwrap();
+        assert!(summaries.is_empty());
     }
 }
