@@ -475,25 +475,48 @@ mod tests {
         let _ = &app.device_name;
     }
 
+    /// RAII temp dir for filesystem tests. Cleans up on `Drop` so a panicking
+    /// assertion can't leak a dir under `/tmp` between runs.
+    struct TestDir(PathBuf);
+
+    impl TestDir {
+        fn new(name: &str) -> Self {
+            let path = std::env::temp_dir().join(name);
+            let _ = std::fs::remove_dir_all(&path);
+            std::fs::create_dir_all(&path).expect("create test dir");
+            TestDir(path)
+        }
+
+        fn path(&self) -> &Path {
+            &self.0
+        }
+    }
+
+    impl Drop for TestDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    /// Encode ~1 second of silence so mp3-duration has a real frame to parse.
+    fn write_silence_mp3(path: &Path) {
+        let mut writer = Mp3Writer::new(path).unwrap();
+        // 48 kHz mono — matches the encoder config.
+        let silence = vec![0.0f32; 48_000];
+        writer.write_samples(&silence).unwrap();
+        writer.finish().unwrap();
+    }
+
     #[test]
     fn scan_recent_includes_playback_duration() {
         // Encode a real (~1s) mp3 via the same writer the app uses, scan the
         // dir, and confirm scan_recent surfaces a parsed duration string in a
         // shape the Recent panel's fixed-width column can render.
-        let dir = std::env::temp_dir().join("radi_test_recent_duration");
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        let mp3 = dir.join("recording_test.mp3");
+        let dir = TestDir::new("radi_test_recent_duration");
+        let mp3 = dir.path().join("recording_test.mp3");
+        write_silence_mp3(&mp3);
 
-        {
-            let mut writer = Mp3Writer::new(&mp3).unwrap();
-            // 48 kHz mono, ~1 second of silence — matches the encoder config.
-            let silence = vec![0.0f32; 48_000];
-            writer.write_samples(&silence).unwrap();
-            writer.finish().unwrap();
-        }
-
-        let recent = scan_recent(&dir);
+        let recent = scan_recent(dir.path());
         assert_eq!(recent.len(), 1);
         let entry = &recent[0];
         assert!(
@@ -506,23 +529,13 @@ mod tests {
             "--",
             "duration parse should not have fallen back to placeholder"
         );
-
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
     fn scan_recent_attaches_episode_metadata_when_sidecar_exists() {
-        let dir = std::env::temp_dir().join("radi_test_recent_episode_meta");
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        let mp3 = dir.join("recording_test.mp3");
-
-        {
-            let mut writer = Mp3Writer::new(&mp3).unwrap();
-            let silence = vec![0.0f32; 48_000];
-            writer.write_samples(&silence).unwrap();
-            writer.finish().unwrap();
-        }
+        let dir = TestDir::new("radi_test_recent_episode_meta");
+        let mp3 = dir.path().join("recording_test.mp3");
+        write_silence_mp3(&mp3);
 
         let meta = EpisodeMetadata {
             episode_id: "ep_test".into(),
@@ -532,23 +545,16 @@ mod tests {
         };
         metadata::write(&mp3, &meta).unwrap();
 
-        let recent = scan_recent(&dir);
+        let recent = scan_recent(dir.path());
         assert_eq!(recent.len(), 1);
         assert_eq!(recent[0].episode.as_ref(), Some(&meta));
 
         // Plain mp3 with no sidecar → episode stays None, doesn't drop the row.
-        let mp3b = dir.join("recording_no_meta.mp3");
-        {
-            let mut writer = Mp3Writer::new(&mp3b).unwrap();
-            let silence = vec![0.0f32; 48_000];
-            writer.write_samples(&silence).unwrap();
-            writer.finish().unwrap();
-        }
-        let recent = scan_recent(&dir);
+        let mp3b = dir.path().join("recording_no_meta.mp3");
+        write_silence_mp3(&mp3b);
+        let recent = scan_recent(dir.path());
         assert_eq!(recent.len(), 2);
         let no_meta = recent.iter().find(|r| r.path == mp3b).unwrap();
         assert!(no_meta.episode.is_none());
-
-        std::fs::remove_dir_all(&dir).ok();
     }
 }

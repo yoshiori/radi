@@ -71,6 +71,32 @@ pub fn record_upload(
 mod tests {
     use super::*;
 
+    /// RAII temp dir for filesystem tests. Cleans up on `Drop` so a panicking
+    /// assertion can't leak a dir under `/tmp` between runs. Pre-removes any
+    /// stale dir from a previous failed run before recreating, since two
+    /// concurrent test invocations sharing the same name would otherwise
+    /// fight (we keep names per-test so this stays a non-issue in practice).
+    struct TestDir(PathBuf);
+
+    impl TestDir {
+        fn new(name: &str) -> Self {
+            let path = std::env::temp_dir().join(name);
+            let _ = std::fs::remove_dir_all(&path);
+            std::fs::create_dir_all(&path).expect("create test dir");
+            TestDir(path)
+        }
+
+        fn path(&self) -> &Path {
+            &self.0
+        }
+    }
+
+    impl Drop for TestDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
     fn fixture() -> EpisodeMetadata {
         EpisodeMetadata {
             episode_id: "ep_abc123".to_string(),
@@ -95,17 +121,13 @@ mod tests {
 
     #[test]
     fn write_then_read_roundtrips() {
-        let dir = std::env::temp_dir().join("radi_test_metadata_roundtrip");
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        let mp3 = dir.join("recording.mp3");
+        let dir = TestDir::new("radi_test_metadata_roundtrip");
+        let mp3 = dir.path().join("recording.mp3");
 
         let meta = fixture();
         write(&mp3, &meta).unwrap();
         let loaded = read(&mp3).expect("sidecar should be readable");
         assert_eq!(loaded, meta);
-
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
@@ -117,10 +139,8 @@ mod tests {
 
     #[test]
     fn record_upload_writes_sidecar_with_rfc3339_timestamp() {
-        let dir = std::env::temp_dir().join("radi_test_metadata_record");
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        let mp3 = dir.join("recording.mp3");
+        let dir = TestDir::new("radi_test_metadata_record");
+        let mp3 = dir.path().join("recording.mp3");
 
         let written = record_upload(
             &mp3,
@@ -139,19 +159,14 @@ mod tests {
 
         let on_disk = read(&mp3).expect("sidecar should exist after record_upload");
         assert_eq!(on_disk, written);
-
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
     fn read_returns_none_on_corrupt_json() {
         // A single corrupt sidecar must not propagate up and break scanning.
-        let dir = std::env::temp_dir().join("radi_test_metadata_corrupt");
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        let mp3 = dir.join("recording.mp3");
+        let dir = TestDir::new("radi_test_metadata_corrupt");
+        let mp3 = dir.path().join("recording.mp3");
         std::fs::write(sidecar_path(&mp3), b"{not json").unwrap();
         assert!(read(&mp3).is_none());
-        std::fs::remove_dir_all(&dir).ok();
     }
 }
