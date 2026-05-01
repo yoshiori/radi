@@ -1,7 +1,7 @@
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant, SystemTime};
 
@@ -36,6 +36,23 @@ use crate::config::ListenConfig;
 use crate::upload::listen::{EpisodeSpec, EpisodeStatus, ListenClient, Visibility};
 use crate::upload::metadata::{self, EpisodeMetadata};
 use crate::upload::progress::UploadProgress;
+use crate::upload::rehydrate;
+
+/// Phase of the startup pass that re-syncs sidecars against LISTEN.
+/// Drives a small indicator in the Recent panel so the user can tell when
+/// titles they edited on listen.style have made it to the local view.
+#[derive(Debug, Clone, PartialEq)]
+pub enum SyncState {
+    /// Either no LISTEN config, or no sidecars to sync — nothing happened.
+    Idle,
+    Syncing,
+    /// Background rehydrate finished. `updated` is the number of sidecars
+    /// whose title or webview_url actually changed.
+    Done {
+        updated: usize,
+    },
+    Failed(String),
+}
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum AppState {
@@ -66,6 +83,8 @@ pub struct App {
     recent: Vec<RecentRecording>,
     recent_last_refresh: Option<Instant>,
     recent_thread: Option<JoinHandle<Vec<RecentRecording>>>,
+    sync_state: Arc<Mutex<SyncState>>,
+    sync_thread: Option<JoinHandle<()>>,
 }
 
 impl App {
@@ -90,9 +109,66 @@ impl App {
             recent: Vec::new(),
             recent_last_refresh: None,
             recent_thread: None,
+            sync_state: Arc::new(Mutex::new(SyncState::Idle)),
+            sync_thread: None,
         };
         app.spawn_recent_scan();
         app
+    }
+
+    /// Snapshot of the current rehydrate phase, for the UI's Recent-panel
+    /// indicator. Cloned because the lock can't be held across the render
+    /// closure without inviting deadlocks.
+    pub fn sync_state(&self) -> SyncState {
+        self.sync_state
+            .lock()
+            .map(|g| g.clone())
+            .unwrap_or(SyncState::Idle)
+    }
+
+    /// Kick off the startup rehydrate pass. Token resolution and the
+    /// GraphQL round-trip happen on a background thread so the TUI never
+    /// blocks on `op://` lookups (which can take seconds) or LISTEN
+    /// latency. Failures are stored in `sync_state` rather than returned —
+    /// a network blip on launch must not prevent the user from recording.
+    pub fn start_rehydrate(&mut self, listen: ListenConfig) {
+        if self.sync_thread.is_some() {
+            return;
+        }
+        self.set_sync_state(SyncState::Syncing);
+        let dir = self.output_dir.clone();
+        let state = self.sync_state.clone();
+        self.sync_thread = Some(std::thread::spawn(move || {
+            let result = rehydrate::rehydrate(&dir, &listen);
+            let next = match result {
+                Ok(updated) => SyncState::Done { updated },
+                Err(e) => SyncState::Failed(e.to_string()),
+            };
+            if let Ok(mut guard) = state.lock() {
+                *guard = next;
+            }
+        }));
+    }
+
+    fn set_sync_state(&self, next: SyncState) {
+        if let Ok(mut guard) = self.sync_state.lock() {
+            *guard = next;
+        }
+    }
+
+    /// Joins the rehydrate thread once it finishes and forces an immediate
+    /// recent-rescan so the freshly rewritten sidecars surface in the UI
+    /// without waiting up to 750ms for the next periodic scan.
+    fn poll_sync(&mut self) {
+        if !self.sync_thread.as_ref().is_some_and(|h| h.is_finished()) {
+            return;
+        }
+        if let Some(h) = self.sync_thread.take() {
+            let _ = h.join();
+        }
+        // Force the next tick to spawn a fresh scan_recent regardless of
+        // when the last one ran.
+        self.recent_last_refresh = None;
     }
 
     pub fn recent(&self) -> &[RecentRecording] {
@@ -249,6 +325,10 @@ impl App {
         }
         self.peak_history.push_back(self.peak());
 
+        // Poll the rehydrate thread *before* the recent rescan so a fresh
+        // sidecar write lands in the very next scan rather than the one
+        // after, keeping the syncing→done UI transition snappy.
+        self.poll_sync();
         self.poll_recent();
         if self.recent_thread.is_none()
             && self
@@ -556,5 +636,56 @@ mod tests {
         assert_eq!(recent.len(), 2);
         let no_meta = recent.iter().find(|r| r.path == mp3b).unwrap();
         assert!(no_meta.episode.is_none());
+    }
+
+    #[test]
+    fn start_rehydrate_drives_sync_state_through_syncing_to_done() {
+        // App-level wiring test: start_rehydrate must spawn a thread, set
+        // Syncing immediately, and tick() must transition the state to Done
+        // once the bg work finishes. The actual fetch/write logic is
+        // covered by upload::rehydrate's tests.
+        let dir = TestDir::new("radi_test_app_rehydrate_wiring");
+        let mp3 = dir.path().join("recording_test.mp3");
+        write_silence_mp3(&mp3);
+        metadata::write(
+            &mp3,
+            &EpisodeMetadata {
+                episode_id: "ep_w".into(),
+                title: "old".into(),
+                webview_url: "https://listen.style/old".into(),
+                uploaded_at: "2026-04-01T00:00:00+00:00".into(),
+            },
+        )
+        .unwrap();
+
+        let mut server = mockito::Server::new();
+        let _m = server
+            .mock("POST", "/graphql")
+            .with_status(200)
+            .with_body(
+                r#"{"data":{"episodes":[
+                    {"id":"ep_w","title":"new","webviewUrl":"https://listen.style/new"}
+                ]}}"#,
+            )
+            .create();
+
+        let mut app = App::new(dir.path().to_path_buf());
+        app.start_rehydrate(ListenConfig {
+            podcast_id: "pod".into(),
+            api_token: Some("t".into()),
+            endpoint: Some(format!("{}/graphql", server.url())),
+        });
+        assert_eq!(app.sync_state(), SyncState::Syncing);
+
+        // Spin briefly while the bg thread runs against mockito (sub-100ms
+        // in practice). Cap at 5s so a deadlock can't hang CI forever.
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while app.sync_state() == SyncState::Syncing && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        // tick() joins the finished thread and clears the handle.
+        app.tick();
+        assert!(matches!(app.sync_state(), SyncState::Done { updated: 1 }));
+        assert!(app.sync_thread.is_none());
     }
 }
