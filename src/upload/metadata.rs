@@ -41,6 +41,19 @@ pub fn write(mp3_path: &Path, meta: &EpisodeMetadata) -> Result<()> {
     Ok(())
 }
 
+/// Delete the sidecar JSON next to `mp3_path`, if present. Idempotent —
+/// a missing sidecar reports `Ok` because the postcondition (sidecar gone)
+/// is already satisfied, and callers like `rehydrate` don't want to stat
+/// first just to avoid a NotFound. The mp3 itself is never touched.
+pub fn remove(mp3_path: &Path) -> Result<()> {
+    let path = sidecar_path(mp3_path);
+    match std::fs::remove_file(&path) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(e).with_context(|| format!("remove {}", path.display())),
+    }
+}
+
 /// Returns `None` when the sidecar is missing or unreadable. Read errors
 /// (corrupt JSON, permission denied) deliberately don't propagate — a single
 /// bad sidecar should never blank the whole Recent panel.
@@ -184,6 +197,30 @@ mod tests {
         write(&mp3, &meta).unwrap();
         let loaded = read(&mp3).expect("sidecar should be readable");
         assert_eq!(loaded, meta);
+    }
+
+    #[test]
+    fn remove_deletes_existing_sidecar() {
+        let dir = TestDir::new("radi_test_metadata_remove_exists");
+        let mp3 = dir.path().join("recording.mp3");
+        std::fs::write(&mp3, b"\xFF\xFB").unwrap();
+        write(&mp3, &fixture()).unwrap();
+        assert!(sidecar_path(&mp3).exists());
+
+        remove(&mp3).unwrap();
+        assert!(!sidecar_path(&mp3).exists());
+        // The mp3 must be left alone — only the upload claim is retracted.
+        assert!(mp3.exists());
+    }
+
+    #[test]
+    fn remove_is_ok_when_sidecar_already_gone() {
+        // Idempotent: callers (e.g. rehydrate) shouldn't have to stat first.
+        // A second call on the same path must not error.
+        let dir = TestDir::new("radi_test_metadata_remove_missing");
+        let mp3 = dir.path().join("recording.mp3");
+        assert!(!sidecar_path(&mp3).exists());
+        remove(&mp3).unwrap();
     }
 
     #[test]

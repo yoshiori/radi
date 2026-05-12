@@ -17,10 +17,11 @@ use crate::upload::listen::ListenClient;
 use crate::upload::metadata;
 
 /// Look at every sidecar under `output_dir`, ask LISTEN for the current
-/// episode summary for each, and overwrite local titles / URLs that drifted.
-/// Returns the number of sidecars that actually changed on disk so the
-/// caller can log a meaningful "synced N" — entries that are already
-/// up-to-date don't trigger a write.
+/// episode summary for each, and either overwrite drifted titles / URLs
+/// or — for episodes the server no longer knows about — remove the
+/// sidecar entirely so the Recent panel stops claiming the file is still
+/// uploaded. Returns the number of sidecars that actually changed on disk
+/// (rewrites + deletions) so the caller can log a meaningful "synced N".
 pub fn rehydrate(output_dir: &Path, listen: &ListenConfig) -> Result<usize> {
     let pairs = metadata::collect_sidecars(output_dir);
     if pairs.is_empty() {
@@ -33,20 +34,30 @@ pub fn rehydrate(output_dir: &Path, listen: &ListenConfig) -> Result<usize> {
     let summaries = client.fetch_episodes(&listen.podcast_id, &ids)?;
 
     // Index server-side summaries so each local sidecar can find its match
-    // in O(1). LISTEN may return fewer rows than we asked for (deleted /
-    // not-visible-to-token episodes); those drop out of the map and the
-    // corresponding local sidecars are left untouched on purpose.
+    // in O(1). Sidecars whose episode id is absent here have been deleted
+    // on LISTEN (fetch_episodes exhaustively pages all statuses before
+    // giving up) and are removed below.
     let by_id: HashMap<&str, &_> = summaries.iter().map(|s| (s.id.as_str(), s)).collect();
 
     let mut updated = 0;
     for (path, mut meta) in pairs {
-        if let Some(summary) = by_id.get(meta.episode_id.as_str())
-            && metadata::apply_remote(&mut meta, summary)
-        {
-            // Best-effort: a single failed write shouldn't abort the
-            // remaining rows. The next startup will retry anyway.
-            if metadata::write(&path, &meta).is_ok() {
-                updated += 1;
+        match by_id.get(meta.episode_id.as_str()) {
+            Some(summary) => {
+                if metadata::apply_remote(&mut meta, summary) {
+                    // Best-effort: a single failed write shouldn't abort
+                    // the remaining rows. The next startup will retry.
+                    if metadata::write(&path, &meta).is_ok() {
+                        updated += 1;
+                    }
+                }
+            }
+            None => {
+                // Episode no longer exists on LISTEN: drop the sidecar so
+                // the ↑ marker disappears from the Recent panel. The mp3
+                // stays, because the user may still want the audio.
+                if metadata::remove(&path).is_ok() {
+                    updated += 1;
+                }
             }
         }
     }
@@ -159,10 +170,11 @@ mod tests {
     }
 
     #[test]
-    fn rehydrate_leaves_sidecar_untouched_when_episode_missing_server_side() {
+    fn rehydrate_deletes_sidecar_when_episode_missing_server_side() {
         // Episode deleted on LISTEN → every status bucket comes back empty
-        // → fetch_episodes returns no summary for it → keep the local
-        // sidecar so the user still sees the title they had.
+        // → fetch_episodes returns no summary for it → remove the local
+        // sidecar so the Recent panel stops showing the stale "uploaded"
+        // mark. The mp3 itself stays — only the upload claim is retracted.
         let dir = TestDir::new("radi_test_rehydrate_missing_server");
         let mp3 = seed(dir.path(), "gone.mp3", "ep_gone", "still here");
 
@@ -188,8 +200,49 @@ mod tests {
         };
 
         let updated = rehydrate(dir.path(), &listen).unwrap();
-        assert_eq!(updated, 0);
-        let after = metadata::read(&mp3).unwrap();
-        assert_eq!(after.title, "still here");
+        // The deleted sidecar counts as a change the user can see.
+        assert_eq!(updated, 1);
+        assert!(
+            metadata::read(&mp3).is_none(),
+            "sidecar must be removed when LISTEN no longer has the episode"
+        );
+        assert!(mp3.exists(), "mp3 itself must be preserved");
+    }
+
+    #[test]
+    fn rehydrate_only_deletes_missing_sidecars_and_leaves_others_alone() {
+        // Mixed case: one episode is gone server-side, another is still
+        // present and matches the local state. Only the missing one should
+        // lose its sidecar; the present one must keep both its sidecar and
+        // its title exactly as before.
+        let dir = TestDir::new("radi_test_rehydrate_mixed_delete");
+        let mp3_gone = seed(dir.path(), "gone.mp3", "ep_gone", "soon-removed");
+        let mp3_kept = seed(dir.path(), "kept.mp3", "ep_kept", "B unchanged");
+
+        let mut server = mockito::Server::new();
+        let _m = server
+            .mock("POST", "/graphql")
+            .with_status(200)
+            .with_body(
+                r#"{"data":{"podcast":{"episodes":{
+                    "paginatorInfo":{"hasMorePages":false},
+                    "data":[
+                        {"id":"ep_kept","title":"B unchanged","webviewUrl":"https://listen.style/old/ep_kept"}
+                    ]
+                }}}}"#,
+            )
+            .create();
+
+        let listen = ListenConfig {
+            podcast_id: "pod".into(),
+            api_token: Some("t".into()),
+            endpoint: Some(format!("{}/graphql", server.url())),
+        };
+
+        let updated = rehydrate(dir.path(), &listen).unwrap();
+        assert_eq!(updated, 1, "only the missing sidecar should count");
+        assert!(metadata::read(&mp3_gone).is_none());
+        let after_kept = metadata::read(&mp3_kept).unwrap();
+        assert_eq!(after_kept.title, "B unchanged");
     }
 }

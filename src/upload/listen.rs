@@ -224,9 +224,10 @@ impl ListenClient {
     /// Look up a batch of episodes by id, scoped to `podcast_id`. Used by the
     /// startup rehydrate pass to refresh local sidecars when the LISTEN-side
     /// title or webview URL has been edited after the upload. Returns only
-    /// episodes the server acknowledged — entries deleted (or not in this
-    /// podcast) drop out silently, and the caller leaves the corresponding
-    /// sidecar alone.
+    /// episodes the server acknowledged — entries that don't come back are
+    /// treated by the caller as deleted on LISTEN and have their sidecars
+    /// removed, so we exhaust every status / page before giving up to avoid
+    /// false-positive deletions.
     ///
     /// Implementation: paginates `podcast.episodes` across PUBLISHED, DRAFT
     /// and SCHEDULED, filtering client-side for the requested ids, and
