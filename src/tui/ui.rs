@@ -696,13 +696,33 @@ fn render_recent(frame: &mut Frame, area: Rect, app: &App, accent: Color) {
 
     let rows = inner.height as usize;
     let selected = app.selected_recent();
+    let start = scroll_start(selected, rows, recent.len());
     let lines: Vec<Line> = recent
         .iter()
+        .skip(start)
         .take(rows)
         .enumerate()
-        .map(|(i, r)| format_recent_line(r, selected == Some(i)))
+        .map(|(i, r)| format_recent_line(r, selected == Some(i + start)))
         .collect();
     frame.render_widget(Paragraph::new(lines), inner);
+}
+
+/// First-visible row in the Recent panel. Stateless because there's
+/// nowhere for a scroll offset to live without an extra App field, and
+/// because the list is capped at MAX_RECENT_RECORDINGS (16) — a snap-to-
+/// bottom scroll model gives consistent results in that small range
+/// without the cost of tracking history.
+///
+/// Rules:
+/// - empty list / list shorter than the viewport: anchor at 0
+/// - selection within [0..rows): anchor at 0 (selection still visible)
+/// - selection past the bottom: anchor so the selected row sits on the
+///   last visible line (`selected + 1 - rows`)
+fn scroll_start(selected: Option<usize>, rows: usize, total: usize) -> usize {
+    if rows == 0 || total <= rows {
+        return 0;
+    }
+    selected.map_or(0, |sel| sel.saturating_sub(rows.saturating_sub(1)))
 }
 
 fn format_recent_line(rec: &RecentRecording, is_selected: bool) -> Line<'_> {
@@ -869,6 +889,41 @@ fn format_duration(d: std::time::Duration) -> String {
 mod tests {
     use super::*;
     use crate::upload::metadata::EpisodeMetadata;
+
+    #[test]
+    fn scroll_start_anchors_at_zero_when_list_fits() {
+        // Whole list visible at once: never scroll — anchoring at 0 keeps
+        // the natural newest-on-top reading order.
+        assert_eq!(scroll_start(Some(0), 5, 3), 0);
+        assert_eq!(scroll_start(Some(2), 5, 3), 0);
+        assert_eq!(scroll_start(None, 5, 3), 0);
+    }
+
+    #[test]
+    fn scroll_start_anchors_at_zero_when_selection_still_visible() {
+        // 10 entries, 5 visible rows, selected at index 4: the row is
+        // still on screen with no scroll, so don't push the view down
+        // just because the list is longer than the viewport.
+        assert_eq!(scroll_start(Some(0), 5, 10), 0);
+        assert_eq!(scroll_start(Some(4), 5, 10), 0);
+    }
+
+    #[test]
+    fn scroll_start_pins_selection_to_bottom_when_off_screen() {
+        // Selection past the initial window: scroll so it sits on the
+        // last visible row. `sel + 1 - rows` — for sel=5, rows=5 that's
+        // 1 (window 1..6).
+        assert_eq!(scroll_start(Some(5), 5, 10), 1);
+        assert_eq!(scroll_start(Some(9), 5, 10), 5);
+    }
+
+    #[test]
+    fn scroll_start_handles_degenerate_inputs() {
+        // Zero-row viewport (collapsed panel) and missing selection must
+        // not panic or return out-of-range indices.
+        assert_eq!(scroll_start(Some(5), 0, 10), 0);
+        assert_eq!(scroll_start(None, 5, 10), 0);
+    }
 
     #[test]
     fn upload_label_shows_percent_and_sizes() {
