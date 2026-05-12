@@ -694,17 +694,18 @@ fn render_recent(frame: &mut Frame, area: Rect, app: &App, accent: Color) {
         return;
     }
 
-    let current = app.output_path.as_path();
     let rows = inner.height as usize;
+    let selected = app.selected_recent();
     let lines: Vec<Line> = recent
         .iter()
         .take(rows)
-        .map(|r| format_recent_line(r, current == r.path))
+        .enumerate()
+        .map(|(i, r)| format_recent_line(r, selected == Some(i)))
         .collect();
     frame.render_widget(Paragraph::new(lines), inner);
 }
 
-fn format_recent_line(rec: &RecentRecording, is_current: bool) -> Line<'_> {
+fn format_recent_line(rec: &RecentRecording, is_selected: bool) -> Line<'_> {
     let filename = rec.path.file_name().and_then(|s| s.to_str()).unwrap_or("?");
     // Prefer the LISTEN title once a sidecar exists — once a recording is
     // uploaded the human-meaningful name is the episode title, not the
@@ -714,13 +715,13 @@ fn format_recent_line(rec: &RecentRecording, is_current: bool) -> Line<'_> {
         .as_ref()
         .map(|e| e.title.as_str())
         .unwrap_or(filename);
-    let marker = if is_current { "▸ " } else { "  " };
-    let marker_style = if is_current {
-        Style::default().fg(REC).add_modifier(Modifier::BOLD)
+    let marker = if is_selected { "▸ " } else { "  " };
+    let marker_style = if is_selected {
+        Style::default().fg(ACCENT).add_modifier(Modifier::BOLD)
     } else {
         Style::default().fg(ACCENT_DIM)
     };
-    let name_style = if is_current {
+    let name_style = if is_selected {
         Style::default()
             .fg(Color::White)
             .add_modifier(Modifier::BOLD)
@@ -754,23 +755,36 @@ fn format_recent_line(rec: &RecentRecording, is_current: bool) -> Line<'_> {
 }
 
 fn render_hints(frame: &mut Frame, area: Rect, state: &AppState, accent: Color) {
+    // States that accept recent-list navigation get an `↑↓` / `o` chord
+    // appended. Recording / Processing / Uploading swallow keypresses, so
+    // surfacing the hint there would be a lie about what works.
     let hints: &[(&str, &str)] = match state {
-        AppState::Idle => &[("r", " Record  "), ("q", " Quit")],
+        AppState::Idle => &[
+            ("r", " Record  "),
+            ("↑↓", " Select  "),
+            ("o", " Open in browser  "),
+            ("q", " Quit"),
+        ],
         AppState::Recording => &[("s", " Stop & Save  "), ("q", " Stop & Quit")],
         AppState::Processing => &[],
         AppState::Done(_) => &[
             ("u", " Upload to LISTEN  "),
+            ("↑↓", " Select  "),
+            ("o", " Open in browser  "),
             ("r", " New Recording  "),
             ("q", " Quit"),
         ],
         AppState::Uploading(_) => &[],
         AppState::Uploaded { .. } => &[
             ("o", " Open in browser  "),
+            ("↑↓", " Select  "),
             ("r", " New Recording  "),
             ("q", " Quit"),
         ],
         AppState::UploadFailed { .. } => &[
             ("u", " Retry Upload  "),
+            ("↑↓", " Select  "),
+            ("o", " Open in browser  "),
             ("r", " New Recording  "),
             ("q", " Quit"),
         ],
