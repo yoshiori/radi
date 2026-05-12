@@ -66,6 +66,24 @@ pub enum AppState {
     ConfirmQuit { previous: Box<AppState> },
 }
 
+impl AppState {
+    /// True when the user is free to move the Recent-panel cursor and
+    /// open an uploaded row. Recording / Processing / Uploading swallow
+    /// keypresses (the encoder/upload threads own the work), so accepting
+    /// Up/Down there — or surfacing the hint — would lie about what
+    /// actually works. Kept on `AppState` so the input handler in
+    /// `main.rs` and the hint row in `tui::ui` cannot drift out of sync.
+    pub fn allows_recent_navigation(&self) -> bool {
+        matches!(
+            self,
+            AppState::Idle
+                | AppState::Done(_)
+                | AppState::Uploaded { .. }
+                | AppState::UploadFailed { .. }
+        )
+    }
+}
+
 pub struct App {
     pub state: AppState,
     pub should_quit: bool,
@@ -81,6 +99,11 @@ pub struct App {
     upload_thread: Option<std::thread::JoinHandle<anyhow::Result<String>>>,
     peak_history: VecDeque<f32>,
     recent: Vec<RecentRecording>,
+    /// Cursor into `recent` for the user-driven row selection. `None` while
+    /// the list is empty (no recordings yet). Tracked by index for cheap
+    /// rendering; preserved across rescans by path in `poll_recent` so a
+    /// newly arrived row doesn't yank the cursor off the user's pick.
+    selected_recent: Option<usize>,
     recent_last_refresh: Option<Instant>,
     recent_thread: Option<JoinHandle<Vec<RecentRecording>>>,
     sync_state: Arc<Mutex<SyncState>>,
@@ -107,6 +130,7 @@ impl App {
             upload_thread: None,
             peak_history: VecDeque::with_capacity(PEAK_HISTORY_CAPACITY),
             recent: Vec::new(),
+            selected_recent: None,
             recent_last_refresh: None,
             recent_thread: None,
             sync_state: Arc::new(Mutex::new(SyncState::Idle)),
@@ -195,7 +219,47 @@ impl App {
         if let Some(handle) = self.recent_thread.take()
             && let Ok(list) = handle.join()
         {
+            // Snapshot the selected path *before* replacing the list so we
+            // can re-anchor the cursor onto the same recording even when a
+            // newer one has bumped it down (or off) the row list.
+            let previous_path = self
+                .selected_recent
+                .and_then(|i| self.recent.get(i))
+                .map(|r| r.path.clone());
             self.recent = list;
+            self.selected_recent = reconcile_selected(&self.recent, previous_path.as_deref());
+        }
+    }
+
+    /// Index of the row currently highlighted in the Recent panel, if any.
+    pub fn selected_recent(&self) -> Option<usize> {
+        self.selected_recent
+    }
+
+    /// The recording the user has highlighted, or `None` when the Recent
+    /// list is empty.
+    pub fn selected_recording(&self) -> Option<&RecentRecording> {
+        self.selected_recent.and_then(|i| self.recent.get(i))
+    }
+
+    /// Move the cursor one row up (towards the top / newer recordings).
+    /// Clamps at the first row rather than wrapping — wrap-around in a
+    /// short list is more disorienting than helpful.
+    pub fn select_recent_prev(&mut self) {
+        if let Some(i) = self.selected_recent
+            && i > 0
+        {
+            self.selected_recent = Some(i - 1);
+        }
+    }
+
+    /// Move the cursor one row down (towards older recordings). Clamps at
+    /// the last row.
+    pub fn select_recent_next(&mut self) {
+        if let Some(i) = self.selected_recent
+            && i + 1 < self.recent.len()
+        {
+            self.selected_recent = Some(i + 1);
         }
     }
 
@@ -370,6 +434,27 @@ impl App {
             _ => resolved,
         };
     }
+}
+
+/// Pick the selection index for `new_recent` given the previously selected
+/// path (if any). The cursor follows the path across rescans so that a
+/// freshly arrived recording — which lands at index 0 and shifts everything
+/// down — doesn't yank the highlight off the row the user was looking at.
+/// Falls back to index 0 when the previous path is gone (file deleted, or
+/// scrolled off the cap), and to `None` when the list is empty.
+fn reconcile_selected(
+    new_recent: &[RecentRecording],
+    previous_path: Option<&Path>,
+) -> Option<usize> {
+    if new_recent.is_empty() {
+        return None;
+    }
+    if let Some(p) = previous_path
+        && let Some(i) = new_recent.iter().position(|r| r.path == p)
+    {
+        return Some(i);
+    }
+    Some(0)
 }
 
 /// Scan `dir` for mp3 recordings, newest first, capped to
@@ -690,5 +775,159 @@ mod tests {
         app.tick();
         assert!(matches!(app.sync_state(), SyncState::Done { updated: 1 }));
         assert!(app.sync_thread.is_none());
+    }
+
+    /// Build a minimal RecentRecording with just the path set — the other
+    /// fields don't matter for selection logic so we keep the test fixtures
+    /// short.
+    fn rec(path: &str) -> RecentRecording {
+        RecentRecording {
+            path: PathBuf::from(path),
+            size: String::new(),
+            duration: String::new(),
+            timestamp: String::new(),
+            episode: None,
+        }
+    }
+
+    #[test]
+    fn allows_recent_navigation_matches_input_accepting_states() {
+        // The hint row and the Up/Down key handler are both driven by
+        // this predicate. If a new state is added and the predicate is
+        // forgotten, this test pins down the contract: every state that
+        // shows the `↑↓` hint must also accept the keypress, and
+        // vice-versa. Busy states (Recording / Processing / Uploading)
+        // and the ConfirmQuit popup must not.
+        assert!(AppState::Idle.allows_recent_navigation());
+        assert!(AppState::Done(PathBuf::from("/x.mp3")).allows_recent_navigation());
+        assert!(
+            AppState::Uploaded {
+                path: PathBuf::from("/x.mp3"),
+                webview_url: "https://example.invalid".into(),
+            }
+            .allows_recent_navigation()
+        );
+        assert!(
+            AppState::UploadFailed {
+                path: PathBuf::from("/x.mp3"),
+                error: "boom".into(),
+            }
+            .allows_recent_navigation()
+        );
+
+        assert!(!AppState::Recording.allows_recent_navigation());
+        assert!(!AppState::Processing.allows_recent_navigation());
+        assert!(!AppState::Uploading(PathBuf::from("/x.mp3")).allows_recent_navigation());
+        assert!(
+            !AppState::ConfirmQuit {
+                previous: Box::new(AppState::Idle)
+            }
+            .allows_recent_navigation()
+        );
+    }
+
+    #[test]
+    fn selected_recent_is_none_on_empty_list() {
+        let app = App::new(PathBuf::from("."));
+        assert!(app.selected_recent().is_none());
+        assert!(app.selected_recording().is_none());
+    }
+
+    #[test]
+    fn reconcile_selected_returns_none_on_empty_list() {
+        let prev = PathBuf::from("/x.mp3");
+        assert_eq!(reconcile_selected(&[], Some(prev.as_path())), None);
+        assert_eq!(reconcile_selected(&[], None), None);
+    }
+
+    #[test]
+    fn reconcile_selected_defaults_to_first_row_when_no_previous() {
+        let list = vec![rec("/a.mp3"), rec("/b.mp3")];
+        assert_eq!(reconcile_selected(&list, None), Some(0));
+    }
+
+    #[test]
+    fn reconcile_selected_follows_path_when_present() {
+        // Selection was on /b. After rescan a new /c shows up at the top —
+        // index naive math says the cursor should now be at 2, but the user
+        // didn't move and would lose their pick. Path tracking keeps the
+        // highlight on /b.
+        let list = vec![rec("/c.mp3"), rec("/a.mp3"), rec("/b.mp3")];
+        let prev = PathBuf::from("/b.mp3");
+        assert_eq!(reconcile_selected(&list, Some(prev.as_path())), Some(2));
+    }
+
+    #[test]
+    fn reconcile_selected_falls_back_to_first_when_previous_is_gone() {
+        // The previously selected file was deleted (or aged off the cap).
+        // Land back on row 0 rather than leaving the cursor pointing into
+        // empty space.
+        let list = vec![rec("/a.mp3"), rec("/b.mp3")];
+        let prev = PathBuf::from("/gone.mp3");
+        assert_eq!(reconcile_selected(&list, Some(prev.as_path())), Some(0));
+    }
+
+    #[test]
+    fn select_recent_prev_clamps_at_zero() {
+        // Wrap-around in a short list is more disorienting than helpful, so
+        // pressing Up on the top row should stay put rather than jump to
+        // the bottom.
+        let mut app = App::new(PathBuf::from("."));
+        app.recent = vec![rec("/a.mp3"), rec("/b.mp3")];
+        app.selected_recent = Some(0);
+        app.select_recent_prev();
+        assert_eq!(app.selected_recent(), Some(0));
+    }
+
+    #[test]
+    fn select_recent_next_clamps_at_last_row() {
+        let mut app = App::new(PathBuf::from("."));
+        app.recent = vec![rec("/a.mp3"), rec("/b.mp3")];
+        app.selected_recent = Some(1);
+        app.select_recent_next();
+        assert_eq!(app.selected_recent(), Some(1));
+    }
+
+    #[test]
+    fn select_recent_moves_within_bounds() {
+        let mut app = App::new(PathBuf::from("."));
+        app.recent = vec![rec("/a.mp3"), rec("/b.mp3"), rec("/c.mp3")];
+        app.selected_recent = Some(0);
+        app.select_recent_next();
+        assert_eq!(app.selected_recent(), Some(1));
+        app.select_recent_next();
+        assert_eq!(app.selected_recent(), Some(2));
+        app.select_recent_prev();
+        assert_eq!(app.selected_recent(), Some(1));
+    }
+
+    #[test]
+    fn select_recent_is_noop_when_list_is_empty() {
+        // Guards against an out-of-bounds Some(0) leaking in if the user
+        // somehow holds the arrow keys before the first scan completes.
+        let mut app = App::new(PathBuf::from("."));
+        assert!(app.recent.is_empty());
+        app.select_recent_next();
+        app.select_recent_prev();
+        assert_eq!(app.selected_recent(), None);
+    }
+
+    #[test]
+    fn poll_recent_initialises_selection_on_first_scan() {
+        // End-to-end: a fresh App seeds the directory scan in `new()`,
+        // tick() drains the handle, and the first non-empty result should
+        // promote selection from None to Some(0).
+        let dir = TestDir::new("radi_test_selection_initialises_on_first_scan");
+        let mp3 = dir.path().join("recording_a.mp3");
+        write_silence_mp3(&mp3);
+        let mut app = App::new(dir.path().to_path_buf());
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while app.recent_thread.is_some() && Instant::now() < deadline {
+            app.tick();
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert_eq!(app.recent().len(), 1);
+        assert_eq!(app.selected_recent(), Some(0));
+        assert_eq!(app.selected_recording().map(|r| r.path.clone()), Some(mp3));
     }
 }

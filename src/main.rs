@@ -85,11 +85,31 @@ fn run_app(
                     app.stop_recording()?;
                 }
                 KeyCode::Char('o') => {
-                    if let AppState::Uploaded { webview_url, .. } = &app.state {
+                    // Prefer the selected Recent row's webview_url so the
+                    // user can re-open *any* uploaded episode, not just the
+                    // one that finished uploading this session. Falls back
+                    // to the Uploaded state's url so a freshly-uploaded
+                    // recording is openable even before the next recent
+                    // rescan (750ms throttle) has picked up its sidecar.
+                    let url = app
+                        .selected_recording()
+                        .and_then(|r| r.episode.as_ref())
+                        .map(|e| e.webview_url.clone())
+                        .or_else(|| match &app.state {
+                            AppState::Uploaded { webview_url, .. } => Some(webview_url.clone()),
+                            _ => None,
+                        });
+                    if let Some(url) = url {
                         // Failures here are non-fatal: the URL is still shown
                         // on screen for the user to copy manually.
-                        let _ = open::that_detached(webview_url);
+                        let _ = open::that_detached(&url);
                     }
+                }
+                KeyCode::Up if app.state.allows_recent_navigation() => {
+                    app.select_recent_prev();
+                }
+                KeyCode::Down if app.state.allows_recent_navigation() => {
+                    app.select_recent_next();
                 }
                 KeyCode::Char('u') => {
                     let path = match &app.state {
