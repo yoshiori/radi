@@ -66,6 +66,24 @@ pub enum AppState {
     ConfirmQuit { previous: Box<AppState> },
 }
 
+impl AppState {
+    /// True when the user is free to move the Recent-panel cursor and
+    /// open an uploaded row. Recording / Processing / Uploading swallow
+    /// keypresses (the encoder/upload threads own the work), so accepting
+    /// Up/Down there — or surfacing the hint — would lie about what
+    /// actually works. Kept on `AppState` so the input handler in
+    /// `main.rs` and the hint row in `tui::ui` cannot drift out of sync.
+    pub fn allows_recent_navigation(&self) -> bool {
+        matches!(
+            self,
+            AppState::Idle
+                | AppState::Done(_)
+                | AppState::Uploaded { .. }
+                | AppState::UploadFailed { .. }
+        )
+    }
+}
+
 pub struct App {
     pub state: AppState,
     pub should_quit: bool,
@@ -770,6 +788,42 @@ mod tests {
             timestamp: String::new(),
             episode: None,
         }
+    }
+
+    #[test]
+    fn allows_recent_navigation_matches_input_accepting_states() {
+        // The hint row and the Up/Down key handler are both driven by
+        // this predicate. If a new state is added and the predicate is
+        // forgotten, this test pins down the contract: every state that
+        // shows the `↑↓` hint must also accept the keypress, and
+        // vice-versa. Busy states (Recording / Processing / Uploading)
+        // and the ConfirmQuit popup must not.
+        assert!(AppState::Idle.allows_recent_navigation());
+        assert!(AppState::Done(PathBuf::from("/x.mp3")).allows_recent_navigation());
+        assert!(
+            AppState::Uploaded {
+                path: PathBuf::from("/x.mp3"),
+                webview_url: "https://example.invalid".into(),
+            }
+            .allows_recent_navigation()
+        );
+        assert!(
+            AppState::UploadFailed {
+                path: PathBuf::from("/x.mp3"),
+                error: "boom".into(),
+            }
+            .allows_recent_navigation()
+        );
+
+        assert!(!AppState::Recording.allows_recent_navigation());
+        assert!(!AppState::Processing.allows_recent_navigation());
+        assert!(!AppState::Uploading(PathBuf::from("/x.mp3")).allows_recent_navigation());
+        assert!(
+            !AppState::ConfirmQuit {
+                previous: Box::new(AppState::Idle)
+            }
+            .allows_recent_navigation()
+        );
     }
 
     #[test]

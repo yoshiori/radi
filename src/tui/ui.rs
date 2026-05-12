@@ -755,43 +755,43 @@ fn format_recent_line(rec: &RecentRecording, is_selected: bool) -> Line<'_> {
 }
 
 fn render_hints(frame: &mut Frame, area: Rect, state: &AppState, accent: Color) {
-    // States that accept recent-list navigation get an `↑↓` / `o` chord
-    // appended. Recording / Processing / Uploading swallow keypresses, so
-    // surfacing the hint there would be a lie about what works.
-    let hints: &[(&str, &str)] = match state {
-        AppState::Idle => &[
-            ("r", " Record  "),
-            ("↑↓", " Select  "),
-            ("o", " Open in browser  "),
-            ("q", " Quit"),
-        ],
-        AppState::Recording => &[("s", " Stop & Save  "), ("q", " Stop & Quit")],
-        AppState::Processing => &[],
-        AppState::Done(_) => &[
-            ("u", " Upload to LISTEN  "),
-            ("↑↓", " Select  "),
-            ("o", " Open in browser  "),
-            ("r", " New Recording  "),
-            ("q", " Quit"),
-        ],
-        AppState::Uploading(_) => &[],
-        AppState::Uploaded { .. } => &[
-            ("o", " Open in browser  "),
-            ("↑↓", " Select  "),
-            ("r", " New Recording  "),
-            ("q", " Quit"),
-        ],
-        AppState::UploadFailed { .. } => &[
-            ("u", " Retry Upload  "),
-            ("↑↓", " Select  "),
-            ("o", " Open in browser  "),
-            ("r", " New Recording  "),
-            ("q", " Quit"),
-        ],
+    // State-specific primary chord first, then a shared `↑↓` (+`o`)
+    // block whenever the state accepts recent-list navigation. Routing
+    // the `↑↓` slot through `allows_recent_navigation` keeps this row
+    // and the matching key handler in `main.rs` in lockstep — adding a
+    // new state can flip both at once via a single predicate edit.
+    let mut hints: Vec<(&str, &str)> = match state {
+        AppState::Idle => vec![("r", " Record  ")],
+        AppState::Recording => vec![("s", " Stop & Save  "), ("q", " Stop & Quit")],
+        AppState::Processing => vec![],
+        AppState::Done(_) => vec![("u", " Upload to LISTEN  ")],
+        AppState::Uploading(_) => vec![],
+        AppState::Uploaded { .. } => vec![("o", " Open in browser  ")],
+        AppState::UploadFailed { .. } => vec![("u", " Retry Upload  ")],
         AppState::ConfirmQuit { .. } => {
             unreachable!("ConfirmQuit is handled by render as a popup")
         }
     };
+    if state.allows_recent_navigation() {
+        hints.push(("↑↓", " Select  "));
+        // Uploaded already advertises `o` in its base row (it's the
+        // primary action right after upload), so skip the duplicate.
+        if !matches!(state, AppState::Uploaded { .. }) {
+            hints.push(("o", " Open in browser  "));
+        }
+    }
+    if matches!(
+        state,
+        AppState::Done(_) | AppState::Uploaded { .. } | AppState::UploadFailed { .. }
+    ) {
+        hints.push(("r", " New Recording  "));
+    }
+    if !matches!(
+        state,
+        AppState::Recording | AppState::Processing | AppState::Uploading(_)
+    ) {
+        hints.push(("q", " Quit"));
+    }
 
     let block = Block::default()
         .borders(Borders::TOP)
@@ -815,9 +815,9 @@ fn render_hints(frame: &mut Frame, area: Rect, state: &AppState, accent: Color) 
         let mut spans = Vec::with_capacity(hints.len() * 4);
         for (key, label) in hints {
             spans.push(Span::styled("[", bracket_style));
-            spans.push(Span::styled(*key, key_style));
+            spans.push(Span::styled(key, key_style));
             spans.push(Span::styled("]", bracket_style));
-            spans.push(Span::styled(*label, label_style));
+            spans.push(Span::styled(label, label_style));
         }
         Line::from(spans)
     };

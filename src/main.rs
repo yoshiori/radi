@@ -105,26 +105,10 @@ fn run_app(
                         let _ = open::that_detached(&url);
                     }
                 }
-                KeyCode::Up
-                    if matches!(
-                        app.state,
-                        AppState::Idle
-                            | AppState::Done(_)
-                            | AppState::Uploaded { .. }
-                            | AppState::UploadFailed { .. }
-                    ) =>
-                {
+                KeyCode::Up if app.state.allows_recent_navigation() => {
                     app.select_recent_prev();
                 }
-                KeyCode::Down
-                    if matches!(
-                        app.state,
-                        AppState::Idle
-                            | AppState::Done(_)
-                            | AppState::Uploaded { .. }
-                            | AppState::UploadFailed { .. }
-                    ) =>
-                {
+                KeyCode::Down if app.state.allows_recent_navigation() => {
                     app.select_recent_next();
                 }
                 KeyCode::Char('u') => {
