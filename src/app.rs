@@ -104,6 +104,11 @@ pub struct App {
     /// rendering; preserved across rescans by path in `poll_recent` so a
     /// newly arrived row doesn't yank the cursor off the user's pick.
     selected_recent: Option<usize>,
+    /// Path of a freshly finished recording awaiting its row in the next
+    /// directory scan. While set, `poll_recent` moves the cursor onto it
+    /// instead of following the user's prior selection, so `u`/`o` pressed
+    /// right after `s` act on the new file. Cleared once the row surfaces.
+    pending_select: Option<PathBuf>,
     recent_last_refresh: Option<Instant>,
     recent_thread: Option<JoinHandle<Vec<RecentRecording>>>,
     sync_state: Arc<Mutex<SyncState>>,
@@ -131,6 +136,7 @@ impl App {
             peak_history: VecDeque::with_capacity(PEAK_HISTORY_CAPACITY),
             recent: Vec::new(),
             selected_recent: None,
+            pending_select: None,
             recent_last_refresh: None,
             recent_thread: None,
             sync_state: Arc::new(Mutex::new(SyncState::Idle)),
@@ -227,7 +233,22 @@ impl App {
                 .and_then(|i| self.recent.get(i))
                 .map(|r| r.path.clone());
             self.recent = list;
-            self.selected_recent = reconcile_selected(&self.recent, previous_path.as_deref());
+            // A just-finished recording takes the cursor away from the
+            // user's prior pick: as soon as its row surfaces in the scan,
+            // jump onto it so `u`/`o` immediately after `s` act on the file
+            // that was just made. Until the row appears the request stays
+            // pending — a scan that started before the encoder wrote the
+            // file completes without it and must not consume the request.
+            let pending_arrived = self
+                .pending_select
+                .as_ref()
+                .is_some_and(|p| self.recent.iter().any(|r| &r.path == p));
+            let anchor = if pending_arrived {
+                self.pending_select.take()
+            } else {
+                previous_path
+            };
+            self.selected_recent = reconcile_selected(&self.recent, anchor.as_deref());
         }
     }
 
@@ -331,7 +352,14 @@ impl App {
                 .map_err(|_| anyhow::anyhow!("Encoding thread panicked"))??;
         }
 
+        // Hand the Recent cursor to the file just written so `u`/`o`
+        // pressed right after `s` act on it rather than on whatever row was
+        // selected before. poll_recent consumes this once the scan surfaces
+        // the row; clearing recent_last_refresh forces that scan to run on
+        // the very next tick instead of waiting out the throttle.
         let path = self.output_path.clone();
+        self.pending_select = Some(path.clone());
+        self.recent_last_refresh = None;
         self.state = AppState::Done(path);
         Ok(())
     }
@@ -910,6 +938,98 @@ mod tests {
         app.select_recent_next();
         app.select_recent_prev();
         assert_eq!(app.selected_recent(), None);
+    }
+
+    /// Drive ticks until the in-flight (or freshly spawned) recent scan has
+    /// completed and `poll_recent` has installed its result.
+    fn drain_recent_scan(app: &mut App) {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            app.tick();
+            if app.recent_thread.is_none() {
+                return;
+            }
+            assert!(Instant::now() < deadline, "recent scan did not finish");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    #[test]
+    fn poll_recent_moves_cursor_to_freshly_finished_recording() {
+        // After `s` finishes a recording the new file must own the Recent
+        // cursor — otherwise `u`/`o` act on whatever row was selected
+        // before, which is not what the user just made.
+        let dir = TestDir::new("radi_test_pending_select_jump");
+        let old = dir.path().join("recording_old.mp3");
+        write_silence_mp3(&old);
+
+        let mut app = App::new(dir.path().to_path_buf());
+        drain_recent_scan(&mut app);
+        assert_eq!(
+            app.selected_recording().map(|r| r.path.clone()),
+            Some(old),
+            "cursor should start on the only existing recording"
+        );
+
+        // Simulate stop_recording: the encoder has written the new file and
+        // its path is stashed as the pending selection.
+        let new = dir.path().join("recording_new.mp3");
+        write_silence_mp3(&new);
+        app.pending_select = Some(new.clone());
+
+        app.recent_last_refresh = None; // force the next tick to rescan
+        drain_recent_scan(&mut app);
+
+        assert_eq!(
+            app.selected_recording().map(|r| r.path.clone()),
+            Some(new),
+            "cursor should jump onto the freshly finished recording"
+        );
+        assert!(
+            app.pending_select.is_none(),
+            "pending request should be cleared once its row surfaces"
+        );
+    }
+
+    #[test]
+    fn poll_recent_keeps_pending_request_until_row_appears() {
+        // A directory scan that started before the encoder wrote the file
+        // completes without it. The pending request must survive that stale
+        // result rather than being silently dropped.
+        let dir = TestDir::new("radi_test_pending_select_survives_stale_scan");
+        let old = dir.path().join("recording_old.mp3");
+        write_silence_mp3(&old);
+
+        let mut app = App::new(dir.path().to_path_buf());
+        drain_recent_scan(&mut app);
+
+        // Point pending at a file that is not on disk yet.
+        let new = dir.path().join("recording_new.mp3");
+        app.pending_select = Some(new.clone());
+
+        app.recent_last_refresh = None;
+        drain_recent_scan(&mut app);
+        assert_eq!(
+            app.pending_select.as_ref(),
+            Some(&new),
+            "pending request must survive a scan that ran before the file existed"
+        );
+        assert_eq!(
+            app.selected_recording().map(|r| r.path.clone()),
+            Some(old),
+            "cursor stays put while the pending row has not surfaced"
+        );
+
+        // The encoder finishes writing; the next scan surfaces the row.
+        write_silence_mp3(&new);
+        app.recent_last_refresh = None;
+        drain_recent_scan(&mut app);
+        assert_eq!(
+            app.selected_recording().map(|r| r.path.clone()),
+            Some(new),
+            "cursor jumps once the pending row finally appears"
+        );
+        assert!(app.pending_select.is_none());
     }
 
     #[test]
