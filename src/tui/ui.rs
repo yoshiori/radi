@@ -24,18 +24,30 @@ const ERR: Color = Color::Red;
 /// differ (busy vs. caution), so the two are kept as distinct constants.
 const BUSY: Color = Color::Yellow;
 
-/// Height below which the big timer is skipped in favour of a plain line —
-/// tui-big-text needs ~8 rows plus the surrounding chrome to render legibly.
-const BIG_TIMER_MIN_HEIGHT: u16 = 25;
+// Fixed panel heights for the main vertical layout. The BIG_*_MIN_HEIGHT
+// thresholds are derived from these sums so a future panel resize can't
+// silently leave the fit-checks stale.
+/// Vertical budget for the banner-style header panel (6 banner rows +
+/// 1 info row + 2 border rows).
+const BIG_HEADER_HEIGHT: u16 = 9;
+const COMPACT_HEADER_HEIGHT: u16 = 3;
+const BIG_TIMER_HEIGHT: u16 = 9;
+const COMPACT_TIMER_HEIGHT: u16 = 3;
+/// Level panel: dB gauge row + spectrum bar field + borders.
+const LEVEL_PANEL_HEIGHT: u16 = 8;
+const HINTS_HEIGHT: u16 = 3;
+
+/// Height below which the big timer is skipped in favour of a plain line.
+/// Compact header + big timer + level + hints, plus 2 rows left over for
+/// the Recent panel.
+const BIG_TIMER_MIN_HEIGHT: u16 =
+    COMPACT_HEADER_HEIGHT + BIG_TIMER_HEIGHT + LEVEL_PANEL_HEIGHT + HINTS_HEIGHT + 2;
 
 /// Height below which the fancy ANSI Shadow banner is skipped in favour of
-/// the original 3-row text header. The banner needs 6 rows + 1 info row +
-/// 2 border rows = 9, and the rest of the main layout (timer + level with
-/// spectrum + hints + spacer) needs ≥21 rows after that, giving 30 total.
-const BIG_HEADER_MIN_HEIGHT: u16 = 30;
-
-/// Vertical budget for the banner-style header panel.
-const BIG_HEADER_HEIGHT: u16 = 9;
+/// the original 3-row text header. Banner header + big timer + level +
+/// hints, plus 1 row left over for the Recent panel.
+const BIG_HEADER_MIN_HEIGHT: u16 =
+    BIG_HEADER_HEIGHT + BIG_TIMER_HEIGHT + LEVEL_PANEL_HEIGHT + HINTS_HEIGHT + 1;
 
 /// Minimum width of the info column beside the banner before we fall back
 /// to the stacked banner-above-info layout. 18 columns comfortably fits the
@@ -88,14 +100,22 @@ fn render_main(frame: &mut Frame, app: &App, state: &AppState) {
     let use_big_timer = area.height >= BIG_TIMER_MIN_HEIGHT;
     let use_big_header = area.height >= BIG_HEADER_MIN_HEIGHT;
 
-    let header_height: u16 = if use_big_header { BIG_HEADER_HEIGHT } else { 3 };
-    let timer_height: u16 = if use_big_timer { 9 } else { 3 };
+    let header_height = if use_big_header {
+        BIG_HEADER_HEIGHT
+    } else {
+        COMPACT_HEADER_HEIGHT
+    };
+    let timer_height = if use_big_timer {
+        BIG_TIMER_HEIGHT
+    } else {
+        COMPACT_TIMER_HEIGHT
+    };
     let chunks = Layout::vertical([
-        Constraint::Length(header_height), // header
-        Constraint::Length(timer_height),  // timer / upload status
-        Constraint::Length(8),             // level meter (gauge + spectrum)
-        Constraint::Min(0),                // spacer
-        Constraint::Length(3),             // key hints
+        Constraint::Length(header_height),      // header
+        Constraint::Length(timer_height),       // timer / upload status
+        Constraint::Length(LEVEL_PANEL_HEIGHT), // level meter (gauge + spectrum)
+        Constraint::Min(0),                     // spacer
+        Constraint::Length(HINTS_HEIGHT),       // key hints
     ])
     .split(area);
 
@@ -162,7 +182,7 @@ fn render_header_compact(
     state: &AppState,
     accent: Color,
 ) {
-    let (badge, badge_style) = status_badge_live(app, state);
+    let (badge, badge_style) = status_badge(app, state);
     let device = app.device_name.as_deref().unwrap_or("No device");
 
     let title_line = Line::from(vec![
@@ -188,7 +208,7 @@ fn render_header_compact(
 }
 
 fn render_header_banner(frame: &mut Frame, area: Rect, app: &App, state: &AppState, accent: Color) {
-    let (badge, badge_style) = status_badge_live(app, state);
+    let (badge, badge_style) = status_badge(app, state);
     let device = app.device_name.as_deref().unwrap_or("No device");
 
     let block = Block::default()
@@ -621,16 +641,23 @@ fn render_level(frame: &mut Frame, area: Rect, app: &App, accent: Color) {
 }
 
 /// Sub-cell bar glyphs: index = how many eighths of the cell are filled
-/// (0 is blank, 8 would be `█`, kept separately as `BAR_FULL`).
-const BAR_EIGHTHS: [char; 8] = [' ', '▁', '▂', '▃', '▄', '▅', '▆', '▇'];
-const BAR_FULL: char = '█';
+/// (0 is blank, 8 would be `█`, kept separately as `BAR_FULL`). Static
+/// strings so building a Span never heap-allocates on the render path.
+const BAR_EIGHTHS: [&str; 8] = [" ", "▁", "▂", "▃", "▄", "▅", "▆", "▇"];
+const BAR_FULL: &str = "█";
+const BAR_EMPTY: &str = " ";
 /// Peak-hold marker drawn in the first empty cell above a bar.
-const PEAK_MARK: char = '─';
+const PEAK_MARK: &str = "─";
 
 /// Draw the spectrum analyzer. The analyzer's fixed band count is regrouped
 /// into however many terminal columns are available (max within each group),
 /// so the display adapts to any width without touching the DSP.
 fn render_spectrum(frame: &mut Frame, area: Rect, app: &App) {
+    // A settled analyzer draws nothing but blanks — skip the whole bar
+    // field on idle frames instead of building it 20 times a second.
+    if app.spectrum_is_settled() {
+        return;
+    }
     let bands = app.spectrum_bands();
     let peaks = app.spectrum_peaks();
     let width = area.width as usize;
@@ -642,12 +669,12 @@ fn render_spectrum(frame: &mut Frame, area: Rect, app: &App) {
         let value = bands[lo..hi].iter().copied().fold(0.0f32, f32::max);
         let peak = peaks[lo..hi].iter().copied().fold(0.0f32, f32::max);
         // Cells come out bottom-up; screen lines go top-down.
-        for (i, (ch, color)) in bar_column_cells(value, peak, height)
+        for (i, (glyph, color)) in bar_column_cells(value, peak, height)
             .into_iter()
             .enumerate()
         {
             let row = height as usize - 1 - i;
-            lines[row].push_span(Span::styled(ch.to_string(), Style::default().fg(color)));
+            lines[row].push_span(Span::styled(glyph, Style::default().fg(color)));
         }
     }
     frame.render_widget(Paragraph::new(lines), area);
@@ -657,7 +684,7 @@ fn render_spectrum(frame: &mut Frame, area: Rect, app: &App) {
 /// `value` fills the bar in 1/8-cell steps; `peak` floats a hold marker in
 /// the otherwise-empty cell at its level. VU-style coloring by cell height:
 /// green body, yellow above 60%, red above 85%.
-fn bar_column_cells(value: f32, peak: f32, height: u16) -> Vec<(char, Color)> {
+fn bar_column_cells(value: f32, peak: f32, height: u16) -> Vec<(&'static str, Color)> {
     let total = i32::from(height) * 8;
     let filled = (value.clamp(0.0, 1.0) * total as f32).round() as i32;
     let peak_e = (peak.clamp(0.0, 1.0) * total as f32).round() as i32;
@@ -676,7 +703,7 @@ fn bar_column_cells(value: f32, peak: f32, height: u16) -> Vec<(char, Color)> {
             } else if peak_e > filled && peak_e > base && peak_e <= base + 8 {
                 (PEAK_MARK, Color::White)
             } else {
-                (' ', color)
+                (BAR_EMPTY, color)
             }
         })
         .collect()
@@ -692,15 +719,6 @@ fn rec_pulse_color(elapsed: std::time::Duration) -> Color {
     let brightness = 0.5 * (1.0 - (t * std::f32::consts::TAU).cos());
     let lerp = |a: f32, b: f32| (a + (b - a) * brightness).round() as u8;
     Color::Rgb(lerp(150.0, 255.0), lerp(30.0, 80.0), lerp(30.0, 80.0))
-}
-
-/// `status_badge`, but with the REC badge background pulsing.
-fn status_badge_live(app: &App, state: &AppState) -> (&'static str, Style) {
-    let (badge, style) = status_badge(state);
-    match state {
-        AppState::Recording => (badge, style.bg(rec_pulse_color(app.elapsed()))),
-        _ => (badge, style),
-    }
 }
 
 /// Trailing spans for the Recent panel title that indicate the rehydrate
@@ -916,13 +934,19 @@ fn render_hints(frame: &mut Frame, area: Rect, state: &AppState, accent: Color) 
     frame.render_widget(Paragraph::new(line).block(block), area);
 }
 
-fn status_badge(state: &AppState) -> (&'static str, Style) {
+/// Badge text and style for the current state. Takes the app so the REC
+/// badge background can pulse with the recording clock — a single styling
+/// path means no call site can accidentally get a non-pulsing variant.
+fn status_badge(app: &App, state: &AppState) -> (&'static str, Style) {
     let bold = Modifier::BOLD;
     match state {
         AppState::Idle => ("■ IDLE", Style::default().fg(ACCENT_DIM).add_modifier(bold)),
         AppState::Recording => (
             "● REC",
-            Style::default().fg(Color::White).bg(REC).add_modifier(bold),
+            Style::default()
+                .fg(Color::White)
+                .bg(rec_pulse_color(app.elapsed()))
+                .add_modifier(bold),
         ),
         AppState::Processing => ("◌ PROC", Style::default().fg(BUSY).add_modifier(bold)),
         AppState::Uploading(_) => ("⇪ UP", Style::default().fg(BUSY).add_modifier(bold)),
@@ -966,7 +990,7 @@ mod tests {
     fn bar_column_full_scale_shows_vu_gradient() {
         let cells = bar_column_cells(1.0, 1.0, 4);
         assert_eq!(cells.len(), 4);
-        assert!(cells.iter().all(|&(ch, _)| ch == BAR_FULL));
+        assert!(cells.iter().all(|&(glyph, _)| glyph == BAR_FULL));
         // Bottom-up: green body, yellow above 60%, red above 85%.
         assert_eq!(cells[0].1, OK);
         assert_eq!(cells[1].1, OK);
@@ -977,7 +1001,7 @@ mod tests {
     #[test]
     fn bar_column_empty_is_blank() {
         let cells = bar_column_cells(0.0, 0.0, 4);
-        assert!(cells.iter().all(|&(ch, _)| ch == ' '));
+        assert!(cells.iter().all(|&(glyph, _)| glyph == BAR_EMPTY));
     }
 
     #[test]
@@ -986,7 +1010,7 @@ mod tests {
         let cells = bar_column_cells(0.5, 0.5, 4);
         assert_eq!(cells[0].0, BAR_FULL);
         assert_eq!(cells[1].0, BAR_FULL);
-        assert_eq!(cells[2].0, ' ');
+        assert_eq!(cells[2].0, BAR_EMPTY);
         // 19/32 = two full cells + 3 eighths into the third.
         let cells = bar_column_cells(19.0 / 32.0, 0.0, 4);
         assert_eq!(cells[2].0, BAR_EIGHTHS[3]);
@@ -997,9 +1021,9 @@ mod tests {
         // Bar at 25%, peak held at 75%: marker sits in the third cell.
         let cells = bar_column_cells(0.25, 0.75, 4);
         assert_eq!(cells[0].0, BAR_FULL);
-        assert_eq!(cells[1].0, ' ');
+        assert_eq!(cells[1].0, BAR_EMPTY);
         assert_eq!(cells[2].0, PEAK_MARK);
-        assert_eq!(cells[3].0, ' ');
+        assert_eq!(cells[3].0, BAR_EMPTY);
     }
 
     #[test]

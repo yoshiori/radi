@@ -47,12 +47,26 @@ fn run_app(
 
     run_splash(terminal, &app)?;
 
+    // 50ms tick keeps the spectrum bars and REC pulse fluid. The tick is a
+    // fixed timestep gated on real elapsed time, NOT one-per-loop-iteration:
+    // poll_event returns early on every key event (auto-repeat alone can
+    // deliver far more than 20 events/s) and the spectrum's attack/release
+    // constants assume a steady cadence.
+    const TICK_INTERVAL: Duration = Duration::from_millis(50);
+    let mut last_tick = Instant::now();
+
     loop {
+        if last_tick.elapsed() >= TICK_INTERVAL {
+            app.tick();
+            last_tick = Instant::now();
+        }
+
         terminal.draw(|frame| ui::render(frame, &app))?;
 
-        // 50ms tick keeps the spectrum bars and REC pulse fluid; the poll
-        // doubles as the frame clock.
-        if let Some(key) = event::poll_event(Duration::from_millis(50))? {
+        // The poll timeout doubles as the frame clock: sleep only until the
+        // next tick is due.
+        let timeout = TICK_INTERVAL.saturating_sub(last_tick.elapsed());
+        if let Some(key) = event::poll_event(timeout)? {
             if key.kind != crossterm::event::KeyEventKind::Press {
                 continue;
             }
@@ -150,8 +164,6 @@ fn run_app(
                 _ => {}
             }
         }
-
-        app.tick();
 
         if app.should_quit {
             break;

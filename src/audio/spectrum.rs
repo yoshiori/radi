@@ -32,6 +32,12 @@ const RELEASE: f32 = 0.25;
 /// 0.03/tick at 20 ticks/s sweeps full scale in ~1.7s.
 const PEAK_FALL: f32 = 0.03;
 
+/// Bands below this are snapped to exactly 0.0 during decay. The exponential
+/// release never reaches zero on its own; the snap lets `is_settled` detect a
+/// fully-quiet analyzer so idle ticks can skip decay and rendering entirely.
+/// Far below the smallest renderable bar (~0.008 at an 8-row panel).
+const SETTLE_EPSILON: f32 = 1e-3;
+
 /// Lock-free-enough sample sharing between the cpal callback and the UI.
 /// The callback uses `try_lock` and simply skips the push when the UI is
 /// mid-snapshot: dropping a visualization chunk is invisible, blocking the
@@ -57,17 +63,18 @@ impl SampleTap {
         }
     }
 
-    /// Copy out exactly `FFT_SIZE` samples, zero-padded at the front (the
-    /// old side) when fewer have arrived yet.
-    pub fn snapshot(&self) -> Vec<f32> {
-        let mut out = vec![0.0; FFT_SIZE];
+    /// Copy the newest samples into `out` (a caller-owned reusable buffer,
+    /// `FFT_SIZE` long), zero-padded at the front (the old side) when fewer
+    /// have arrived yet. Taking a buffer keeps the per-tick hot path free of
+    /// heap allocation.
+    pub fn snapshot_into(&self, out: &mut [f32]) {
+        out.fill(0.0);
         if let Ok(buf) = self.inner.lock() {
             let (a, b) = buf.as_slices();
-            let start = FFT_SIZE - buf.len();
+            let start = out.len() - buf.len();
             out[start..start + a.len()].copy_from_slice(a);
             out[start + a.len()..].copy_from_slice(b);
         }
-        out
     }
 
     pub fn clear(&self) {
@@ -126,6 +133,11 @@ impl SpectrumAnalyzer {
         // sine lands at ~1.0 (0dB) in its band.
         let scale = 2.0 / self.window_gain;
         for (i, &(start, end)) in self.band_bins.iter().enumerate() {
+            // Max over the band's bins: deliberate peak-analyzer behavior.
+            // Wide (treble) bands span many bins, so broadband noise reads a
+            // few dB hotter on the right than a power average would show —
+            // acceptable for a speech level display where tonal peaks are
+            // what the eye should track.
             let amp = self.scratch[start..end]
                 .iter()
                 .map(|c| c.norm() * scale)
@@ -141,11 +153,18 @@ impl SpectrumAnalyzer {
     /// (Idle etc.) so the bars fall and the peak markers drift down.
     pub fn decay(&mut self) {
         for band in &mut self.bands {
-            let mut v = *band;
-            Self::step(&mut v, 0.0);
-            *band = if v < 1e-3 { 0.0 } else { v };
+            Self::step(band, 0.0);
+            if *band < SETTLE_EPSILON {
+                *band = 0.0;
+            }
         }
         self.settle_peaks();
+    }
+
+    /// True once every band and peak marker has fully decayed to zero, so
+    /// callers can skip decay ticks and rendering while the analyzer idles.
+    pub fn is_settled(&self) -> bool {
+        self.bands.iter().all(|&b| b == 0.0) && self.peaks.iter().all(|&p| p == 0.0)
     }
 
     /// Smoothed band values, 0..1.
@@ -174,22 +193,31 @@ impl SpectrumAnalyzer {
 
 /// Half-open FFT bin ranges `[start, end)` for each of the `NUM_BANDS`
 /// log-spaced bands between `FREQ_MIN` and `FREQ_MAX`.
+///
+/// Built as a shared edge list with two clamp passes: the forward pass forces
+/// every band to own ≥1 bin (low bands are narrower than one FFT bin), the
+/// backward pass caps everything at Nyquist. Because consecutive bands share
+/// an edge, the result is contiguous and strictly monotonic for ANY
+/// `FREQ_MIN`/`FREQ_MAX`/`FFT_SIZE` combination with `NUM_BANDS ≤ FFT_SIZE/2`
+/// — bands can never overlap, even when the top of the range saturates at
+/// Nyquist.
 fn band_bins(sample_rate: f32) -> Vec<(usize, usize)> {
     let bin_hz = sample_rate / FFT_SIZE as f32;
     let max_bin = FFT_SIZE / 2;
-    let mut bins = Vec::with_capacity(NUM_BANDS);
-    let mut prev_end = 0usize;
-    for i in 0..NUM_BANDS {
-        let f_lo = FREQ_MIN * (FREQ_MAX / FREQ_MIN).powf(i as f32 / NUM_BANDS as f32);
-        let f_hi = FREQ_MIN * (FREQ_MAX / FREQ_MIN).powf((i + 1) as f32 / NUM_BANDS as f32);
-        // Low bands are narrower than one FFT bin; force ≥1 bin per band and
-        // keep ranges contiguous so no bin is counted twice.
-        let start = ((f_lo / bin_hz) as usize).max(prev_end).min(max_bin - 1);
-        let end = ((f_hi / bin_hz) as usize).clamp(start + 1, max_bin);
-        bins.push((start, end));
-        prev_end = end;
+    let mut edges: Vec<usize> = (0..=NUM_BANDS)
+        .map(|i| {
+            let f = FREQ_MIN * (FREQ_MAX / FREQ_MIN).powf(i as f32 / NUM_BANDS as f32);
+            (f / bin_hz) as usize
+        })
+        .collect();
+    for i in 1..=NUM_BANDS {
+        edges[i] = edges[i].max(edges[i - 1] + 1);
     }
-    bins
+    edges[NUM_BANDS] = edges[NUM_BANDS].min(max_bin);
+    for i in (0..NUM_BANDS).rev() {
+        edges[i] = edges[i].min(edges[i + 1] - 1);
+    }
+    edges.windows(2).map(|w| (w[0], w[1])).collect()
 }
 
 #[cfg(test)]
@@ -202,6 +230,13 @@ mod tests {
         (0..len)
             .map(|i| amplitude * (2.0 * std::f32::consts::PI * freq * i as f32 / SAMPLE_RATE).sin())
             .collect()
+    }
+
+    /// Test-side equivalent of the app's reusable-buffer snapshot flow.
+    fn snapshot(tap: &SampleTap) -> Vec<f32> {
+        let mut out = vec![0.0; FFT_SIZE];
+        tap.snapshot_into(&mut out);
+        out
     }
 
     /// Index of the band whose frequency range contains `freq`.
@@ -221,6 +256,40 @@ mod tests {
             assert!(end <= FFT_SIZE / 2, "band beyond Nyquist");
             prev_end = end;
         }
+    }
+
+    #[test]
+    fn band_bins_stay_monotonic_when_saturating_at_nyquist() {
+        // A low sample rate pushes FREQ_MAX far beyond Nyquist, so the upper
+        // bands all saturate — the edge-clamping must keep every band
+        // non-empty and non-overlapping even then.
+        let bins = band_bins(2_000.0);
+        assert_eq!(bins.len(), NUM_BANDS);
+        let mut prev_end = 0;
+        for &(start, end) in &bins {
+            assert!(start < end, "empty band: [{start}, {end})");
+            assert!(start >= prev_end, "bands overlap or go backwards");
+            assert!(end <= FFT_SIZE / 2, "band beyond Nyquist");
+            prev_end = end;
+        }
+    }
+
+    #[test]
+    fn analyzer_settles_after_decay() {
+        let mut analyzer = SpectrumAnalyzer::new(SAMPLE_RATE);
+        assert!(analyzer.is_settled(), "fresh analyzer should be settled");
+
+        let signal = sine(1000.0, 1.0, FFT_SIZE);
+        analyzer.update(&signal);
+        assert!(!analyzer.is_settled(), "live signal should unsettle");
+
+        for _ in 0..200 {
+            analyzer.decay();
+        }
+        assert!(
+            analyzer.is_settled(),
+            "bands and peaks should reach exact zero"
+        );
     }
 
     #[test]
@@ -331,7 +400,7 @@ mod tests {
         let tap = SampleTap::new();
         tap.push(&vec![1.0; FFT_SIZE]);
         tap.push(&vec![2.0; 100]);
-        let snap = tap.snapshot();
+        let snap = snapshot(&tap);
         assert_eq!(snap.len(), FFT_SIZE);
         // Newest 100 samples are the 2.0s, the rest are the tail of the 1.0s.
         assert!(snap[FFT_SIZE - 100..].iter().all(|&s| s == 2.0));
@@ -342,7 +411,7 @@ mod tests {
     fn tap_zero_pads_short_snapshots() {
         let tap = SampleTap::new();
         tap.push(&[0.5; 10]);
-        let snap = tap.snapshot();
+        let snap = snapshot(&tap);
         assert_eq!(snap.len(), FFT_SIZE);
         assert!(snap[..FFT_SIZE - 10].iter().all(|&s| s == 0.0));
         assert!(snap[FFT_SIZE - 10..].iter().all(|&s| s == 0.5));
@@ -353,6 +422,6 @@ mod tests {
         let tap = SampleTap::new();
         tap.push(&[0.5; 500]);
         tap.clear();
-        assert!(tap.snapshot().iter().all(|&s| s == 0.0));
+        assert!(snapshot(&tap).iter().all(|&s| s == 0.0));
     }
 }

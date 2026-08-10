@@ -8,6 +8,12 @@ use cpal::{SampleRate, StreamConfig};
 
 use crate::audio::spectrum::SampleTap;
 
+/// Capture sample rate. The recorder owns this value because its StreamConfig
+/// is what actually enforces it; consumers that need it for analysis math
+/// (e.g. the spectrum analyzer's bin layout) must read it from here so the
+/// two can never silently drift apart.
+pub const SAMPLE_RATE: u32 = 44_100;
+
 pub struct Recorder {
     stream: cpal::Stream,
 }
@@ -25,7 +31,7 @@ impl Recorder {
 
         let config = StreamConfig {
             channels: 1,
-            sample_rate: SampleRate(44_100),
+            sample_rate: SampleRate(SAMPLE_RATE),
             buffer_size: cpal::BufferSize::Default,
         };
 

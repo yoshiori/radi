@@ -4,10 +4,6 @@ use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant, SystemTime};
 
-/// Capture sample rate, shared by the recorder config and the spectrum
-/// analyzer's bin math.
-const SAMPLE_RATE_HZ: f32 = 44_100.0;
-
 /// How many previous recordings to surface in the TUI's "Recent" panel.
 pub const MAX_RECENT_RECORDINGS: usize = 16;
 
@@ -31,7 +27,7 @@ pub struct RecentRecording {
 use crate::audio::denoiser::Denoiser;
 use crate::audio::encoder::Mp3Writer;
 use crate::audio::recorder::{self, Recorder};
-use crate::audio::spectrum::{SampleTap, SpectrumAnalyzer};
+use crate::audio::spectrum::{FFT_SIZE, SampleTap, SpectrumAnalyzer};
 use crate::config::ListenConfig;
 use crate::upload::listen::{EpisodeSpec, EpisodeStatus, ListenClient, Visibility};
 use crate::upload::metadata::{self, EpisodeMetadata};
@@ -98,6 +94,9 @@ pub struct App {
     encode_thread: Option<std::thread::JoinHandle<anyhow::Result<()>>>,
     upload_thread: Option<std::thread::JoinHandle<anyhow::Result<String>>>,
     sample_tap: SampleTap,
+    /// Reusable buffer for `SampleTap::snapshot_into`, so the 50ms tick
+    /// stays free of per-frame heap allocation.
+    tap_snapshot: Vec<f32>,
     spectrum: SpectrumAnalyzer,
     recent: Vec<RecentRecording>,
     /// Cursor into `recent` for the user-driven row selection. `None` while
@@ -135,7 +134,8 @@ impl App {
             encode_thread: None,
             upload_thread: None,
             sample_tap: SampleTap::new(),
-            spectrum: SpectrumAnalyzer::new(SAMPLE_RATE_HZ),
+            tap_snapshot: vec![0.0; FFT_SIZE],
+            spectrum: SpectrumAnalyzer::new(recorder::SAMPLE_RATE as f32),
             recent: Vec::new(),
             selected_recent: None,
             pending_select: None,
@@ -307,6 +307,12 @@ impl App {
         self.spectrum.peaks()
     }
 
+    /// True while the analyzer shows nothing — lets the renderer skip the
+    /// bar-field work entirely on idle frames.
+    pub fn spectrum_is_settled(&self) -> bool {
+        self.spectrum.is_settled()
+    }
+
     pub fn start_recording(&mut self) -> anyhow::Result<()> {
         if self.state != AppState::Idle {
             return Ok(());
@@ -422,10 +428,13 @@ impl App {
         // Called each TUI frame to update dynamic state.
         // Feed the spectrum analyzer from the live capture tap while
         // recording; otherwise let the bars and peak markers fall so the
-        // display settles to silence instead of freezing mid-frame.
+        // display settles to silence instead of freezing mid-frame. Once
+        // fully settled, skip the decay loop — an idle app shouldn't churn
+        // the analyzer 20 times a second for an all-zero display.
         if self.state == AppState::Recording {
-            self.spectrum.update(&self.sample_tap.snapshot());
-        } else {
+            self.sample_tap.snapshot_into(&mut self.tap_snapshot);
+            self.spectrum.update(&self.tap_snapshot);
+        } else if !self.spectrum.is_settled() {
             self.spectrum.decay();
         }
 
