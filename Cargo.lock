@@ -2274,6 +2274,7 @@ dependencies = [
  "ratatui",
  "reqwest",
  "rubato",
+ "rustfft",
  "serde",
  "serde_json",
  "throbber-widgets-tui",

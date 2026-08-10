@@ -25,7 +25,7 @@ The app follows a state machine pattern with three concurrent threads:
 
 1. **Audio capture thread** (cpal callback) → sends f32 samples via mpsc channel, updates peak level via `Arc<AtomicU32>`
 2. **Encoding thread** → receives samples at 44.1kHz, resamples to 48kHz (`rubato`), denoises via ML model (`denoiser.rs`/`nnnoiseless`), encodes to MP3 (`encoder.rs`), writes to file
-3. **Main thread** → runs TUI event loop (100ms poll), reads peak level atomically, manages state transitions
+3. **Main thread** → runs TUI event loop (50ms poll), reads peak level atomically, manages state transitions
 
 ### State Machine (`app.rs`)
 

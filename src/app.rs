@@ -1,13 +1,12 @@
-use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant, SystemTime};
 
-/// Number of peak-level samples retained for the sparkline waveform.
-/// At the ~100ms UI tick this covers roughly the last 12 seconds.
-pub const PEAK_HISTORY_CAPACITY: usize = 120;
+/// Capture sample rate, shared by the recorder config and the spectrum
+/// analyzer's bin math.
+const SAMPLE_RATE_HZ: f32 = 44_100.0;
 
 /// How many previous recordings to surface in the TUI's "Recent" panel.
 pub const MAX_RECENT_RECORDINGS: usize = 16;
@@ -16,7 +15,7 @@ pub const MAX_RECENT_RECORDINGS: usize = 16;
 const RECENT_REFRESH_INTERVAL: Duration = Duration::from_millis(750);
 
 /// One row in the "Recent" panel. Display strings are pre-formatted on the
-/// scan thread so the render loop (100ms tick) stays allocation-free.
+/// scan thread so the render loop (50ms tick) stays allocation-free.
 #[derive(Debug, Clone)]
 pub struct RecentRecording {
     pub path: PathBuf,
@@ -32,6 +31,7 @@ pub struct RecentRecording {
 use crate::audio::denoiser::Denoiser;
 use crate::audio::encoder::Mp3Writer;
 use crate::audio::recorder::{self, Recorder};
+use crate::audio::spectrum::{SampleTap, SpectrumAnalyzer};
 use crate::config::ListenConfig;
 use crate::upload::listen::{EpisodeSpec, EpisodeStatus, ListenClient, Visibility};
 use crate::upload::metadata::{self, EpisodeMetadata};
@@ -97,7 +97,8 @@ pub struct App {
     recorder: Option<Recorder>,
     encode_thread: Option<std::thread::JoinHandle<anyhow::Result<()>>>,
     upload_thread: Option<std::thread::JoinHandle<anyhow::Result<String>>>,
-    peak_history: VecDeque<f32>,
+    sample_tap: SampleTap,
+    spectrum: SpectrumAnalyzer,
     recent: Vec<RecentRecording>,
     /// Cursor into `recent` for the user-driven row selection. `None` while
     /// the list is empty (no recordings yet). Tracked by index for cheap
@@ -133,7 +134,8 @@ impl App {
             recorder: None,
             encode_thread: None,
             upload_thread: None,
-            peak_history: VecDeque::with_capacity(PEAK_HISTORY_CAPACITY),
+            sample_tap: SampleTap::new(),
+            spectrum: SpectrumAnalyzer::new(SAMPLE_RATE_HZ),
             recent: Vec::new(),
             selected_recent: None,
             pending_select: None,
@@ -295,8 +297,14 @@ impl App {
         f32::from_bits(self.peak_level.load(Ordering::Relaxed))
     }
 
-    pub fn peak_history(&self) -> &VecDeque<f32> {
-        &self.peak_history
+    /// Smoothed spectrum band values for the analyzer display, 0..1.
+    pub fn spectrum_bands(&self) -> &[f32] {
+        self.spectrum.bands()
+    }
+
+    /// Peak-hold markers matching `spectrum_bands`, 0..1.
+    pub fn spectrum_peaks(&self) -> &[f32] {
+        self.spectrum.peaks()
     }
 
     pub fn start_recording(&mut self) -> anyhow::Result<()> {
@@ -305,7 +313,10 @@ impl App {
         }
 
         let peak = self.peak_level.clone();
-        let (recorder, rx) = Recorder::new(peak)?;
+        // Fresh tap contents so the analyzer doesn't flash the previous
+        // take's tail when a new recording starts.
+        self.sample_tap.clear();
+        let (recorder, rx) = Recorder::new(peak, self.sample_tap.clone())?;
         recorder.play()?;
         self.device_name = recorder::default_input_device_name();
 
@@ -409,13 +420,14 @@ impl App {
 
     pub fn tick(&mut self) {
         // Called each TUI frame to update dynamic state.
-        // Sample the peak meter into a rolling history so the UI can render a
-        // waveform sparkline; only meaningful while recording, but keeping the
-        // last recording's tail around briefly is harmless.
-        if self.peak_history.len() == PEAK_HISTORY_CAPACITY {
-            self.peak_history.pop_front();
+        // Feed the spectrum analyzer from the live capture tap while
+        // recording; otherwise let the bars and peak markers fall so the
+        // display settles to silence instead of freezing mid-frame.
+        if self.state == AppState::Recording {
+            self.spectrum.update(&self.sample_tap.snapshot());
+        } else {
+            self.spectrum.decay();
         }
-        self.peak_history.push_back(self.peak());
 
         // Poll the rehydrate thread *before* the recent rescan so a fresh
         // sidecar write lands in the very next scan rather than the one

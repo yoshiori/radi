@@ -6,12 +6,17 @@ use std::sync::mpsc;
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{SampleRate, StreamConfig};
 
+use crate::audio::spectrum::SampleTap;
+
 pub struct Recorder {
     stream: cpal::Stream,
 }
 
 impl Recorder {
-    pub fn new(peak: Arc<AtomicU32>) -> anyhow::Result<(Self, mpsc::Receiver<Vec<f32>>)> {
+    pub fn new(
+        peak: Arc<AtomicU32>,
+        tap: SampleTap,
+    ) -> anyhow::Result<(Self, mpsc::Receiver<Vec<f32>>)> {
         let host = cpal::default_host();
 
         let device = host
@@ -31,6 +36,7 @@ impl Recorder {
             move |data: &[f32], _info: &cpal::InputCallbackInfo| {
                 let peak_val = data.iter().map(|s| s.abs()).fold(0.0f32, f32::max);
                 peak.store(peak_val.to_bits(), Ordering::Relaxed);
+                tap.push(data);
                 let _ = tx.send(data.to_vec());
             },
             |err| eprintln!("Audio stream error: {err}"),

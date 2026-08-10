@@ -50,7 +50,9 @@ fn run_app(
     loop {
         terminal.draw(|frame| ui::render(frame, &app))?;
 
-        if let Some(key) = event::poll_event(Duration::from_millis(100))? {
+        // 50ms tick keeps the spectrum bars and REC pulse fluid; the poll
+        // doubles as the frame clock.
+        if let Some(key) = event::poll_event(Duration::from_millis(50))? {
             if key.kind != crossterm::event::KeyEventKind::Press {
                 continue;
             }

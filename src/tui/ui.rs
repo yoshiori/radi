@@ -2,7 +2,7 @@ use ratatui::Frame;
 use ratatui::layout::{Alignment, Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span, Text};
-use ratatui::widgets::{Block, BorderType, Borders, Gauge, Paragraph, Sparkline};
+use ratatui::widgets::{Block, BorderType, Borders, Gauge, Paragraph};
 use throbber_widgets_tui::{Throbber, ThrobberState};
 use tui_big_text::{BigText, PixelSize};
 use tui_popup::Popup;
@@ -26,13 +26,13 @@ const BUSY: Color = Color::Yellow;
 
 /// Height below which the big timer is skipped in favour of a plain line —
 /// tui-big-text needs ~8 rows plus the surrounding chrome to render legibly.
-const BIG_TIMER_MIN_HEIGHT: u16 = 22;
+const BIG_TIMER_MIN_HEIGHT: u16 = 25;
 
 /// Height below which the fancy ANSI Shadow banner is skipped in favour of
 /// the original 3-row text header. The banner needs 6 rows + 1 info row +
-/// 2 border rows = 9, and the rest of the main layout (timer + level + hints
-/// + spacer) needs ≥18 rows after that, giving 27 total.
-const BIG_HEADER_MIN_HEIGHT: u16 = 27;
+/// 2 border rows = 9, and the rest of the main layout (timer + level with
+/// spectrum + hints + spacer) needs ≥21 rows after that, giving 30 total.
+const BIG_HEADER_MIN_HEIGHT: u16 = 30;
 
 /// Vertical budget for the banner-style header panel.
 const BIG_HEADER_HEIGHT: u16 = 9;
@@ -93,7 +93,7 @@ fn render_main(frame: &mut Frame, app: &App, state: &AppState) {
     let chunks = Layout::vertical([
         Constraint::Length(header_height), // header
         Constraint::Length(timer_height),  // timer / upload status
-        Constraint::Length(5),             // level meter (sparkline + gauge)
+        Constraint::Length(8),             // level meter (gauge + spectrum)
         Constraint::Min(0),                // spacer
         Constraint::Length(3),             // key hints
     ])
@@ -101,7 +101,7 @@ fn render_main(frame: &mut Frame, app: &App, state: &AppState) {
 
     render_header(frame, chunks[0], app, state, accent, use_big_header);
     render_center(frame, chunks[1], app, state, accent, use_big_timer);
-    render_level(frame, chunks[2], app, state, accent);
+    render_level(frame, chunks[2], app, accent);
     render_recent(frame, chunks[3], app, accent);
     render_hints(frame, chunks[4], state, accent);
 }
@@ -162,7 +162,7 @@ fn render_header_compact(
     state: &AppState,
     accent: Color,
 ) {
-    let (badge, badge_style) = status_badge(state);
+    let (badge, badge_style) = status_badge_live(app, state);
     let device = app.device_name.as_deref().unwrap_or("No device");
 
     let title_line = Line::from(vec![
@@ -188,7 +188,7 @@ fn render_header_compact(
 }
 
 fn render_header_banner(frame: &mut Frame, area: Rect, app: &App, state: &AppState, accent: Color) {
-    let (badge, badge_style) = status_badge(state);
+    let (badge, badge_style) = status_badge_live(app, state);
     let device = app.device_name.as_deref().unwrap_or("No device");
 
     let block = Block::default()
@@ -317,10 +317,16 @@ fn render_timer(
         _ => "",
     };
 
+    // While recording, the timer border breathes in sync with the REC
+    // badge so the "live" state is unmissable even at a glance.
+    let border = match state {
+        AppState::Recording => rec_pulse_color(app.elapsed()),
+        _ => accent,
+    };
     let block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(accent))
+        .border_style(Style::default().fg(border))
         .title(Line::from(vec![
             Span::raw(" "),
             Span::styled(label, Style::default().fg(accent).bold()),
@@ -566,7 +572,7 @@ fn render_upload_failed(frame: &mut Frame, area: Rect, error: &str, accent: Colo
     );
 }
 
-fn render_level(frame: &mut Frame, area: Rect, app: &App, state: &AppState, accent: Color) {
+fn render_level(frame: &mut Frame, area: Rect, app: &App, accent: Color) {
     let block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
@@ -608,26 +614,92 @@ fn render_level(frame: &mut Frame, area: Rect, app: &App, state: &AppState, acce
         .ratio(level);
     frame.render_widget(gauge, rows[0]);
 
-    // Rolling waveform of recent peaks so Recording state actually feels alive.
+    // Live spectrum analyzer bars so Recording state actually feels alive.
     if rows[1].height > 0 && rows[1].width > 0 {
-        let history = app.peak_history();
-        let data: Vec<u64> = history
-            .iter()
-            .rev()
-            .take(rows[1].width as usize)
-            .rev()
-            .map(|&v| (v.clamp(0.0, 1.0) * 100.0) as u64)
-            .collect();
-        let sparkline_color = match state {
-            AppState::Recording => REC,
-            AppState::Idle => ACCENT_DIM,
-            _ => accent,
-        };
-        let sparkline = Sparkline::default()
-            .data(&data)
-            .max(100)
-            .style(Style::default().fg(sparkline_color));
-        frame.render_widget(sparkline, rows[1]);
+        render_spectrum(frame, rows[1], app);
+    }
+}
+
+/// Sub-cell bar glyphs: index = how many eighths of the cell are filled
+/// (0 is blank, 8 would be `█`, kept separately as `BAR_FULL`).
+const BAR_EIGHTHS: [char; 8] = [' ', '▁', '▂', '▃', '▄', '▅', '▆', '▇'];
+const BAR_FULL: char = '█';
+/// Peak-hold marker drawn in the first empty cell above a bar.
+const PEAK_MARK: char = '─';
+
+/// Draw the spectrum analyzer. The analyzer's fixed band count is regrouped
+/// into however many terminal columns are available (max within each group),
+/// so the display adapts to any width without touching the DSP.
+fn render_spectrum(frame: &mut Frame, area: Rect, app: &App) {
+    let bands = app.spectrum_bands();
+    let peaks = app.spectrum_peaks();
+    let width = area.width as usize;
+    let height = area.height;
+    let mut lines: Vec<Line> = (0..height).map(|_| Line::default()).collect();
+    for col in 0..width {
+        let lo = col * bands.len() / width;
+        let hi = ((col + 1) * bands.len() / width).clamp(lo + 1, bands.len());
+        let value = bands[lo..hi].iter().copied().fold(0.0f32, f32::max);
+        let peak = peaks[lo..hi].iter().copied().fold(0.0f32, f32::max);
+        // Cells come out bottom-up; screen lines go top-down.
+        for (i, (ch, color)) in bar_column_cells(value, peak, height)
+            .into_iter()
+            .enumerate()
+        {
+            let row = height as usize - 1 - i;
+            lines[row].push_span(Span::styled(ch.to_string(), Style::default().fg(color)));
+        }
+    }
+    frame.render_widget(Paragraph::new(lines), area);
+}
+
+/// Glyph and color for each cell of one analyzer column, bottom-up.
+/// `value` fills the bar in 1/8-cell steps; `peak` floats a hold marker in
+/// the otherwise-empty cell at its level. VU-style coloring by cell height:
+/// green body, yellow above 60%, red above 85%.
+fn bar_column_cells(value: f32, peak: f32, height: u16) -> Vec<(char, Color)> {
+    let total = i32::from(height) * 8;
+    let filled = (value.clamp(0.0, 1.0) * total as f32).round() as i32;
+    let peak_e = (peak.clamp(0.0, 1.0) * total as f32).round() as i32;
+    (0..i32::from(height))
+        .map(|cell| {
+            let base = cell * 8;
+            let color = match f32::from((base + 8) as u16) / total as f32 {
+                r if r > 0.85 => ERR,
+                r if r > 0.60 => WARN,
+                _ => OK,
+            };
+            if filled >= base + 8 {
+                (BAR_FULL, color)
+            } else if filled > base {
+                (BAR_EIGHTHS[(filled - base) as usize], color)
+            } else if peak_e > filled && peak_e > base && peak_e <= base + 8 {
+                (PEAK_MARK, Color::White)
+            } else {
+                (' ', color)
+            }
+        })
+        .collect()
+}
+
+/// Breathing period of the REC pulse while recording.
+const REC_PULSE_PERIOD_MS: u128 = 1200;
+
+/// Color that breathes between dim and bright red, phase-locked to the
+/// recording clock so the badge and timer border pulse in unison.
+fn rec_pulse_color(elapsed: std::time::Duration) -> Color {
+    let t = (elapsed.as_millis() % REC_PULSE_PERIOD_MS) as f32 / REC_PULSE_PERIOD_MS as f32;
+    let brightness = 0.5 * (1.0 - (t * std::f32::consts::TAU).cos());
+    let lerp = |a: f32, b: f32| (a + (b - a) * brightness).round() as u8;
+    Color::Rgb(lerp(150.0, 255.0), lerp(30.0, 80.0), lerp(30.0, 80.0))
+}
+
+/// `status_badge`, but with the REC badge background pulsing.
+fn status_badge_live(app: &App, state: &AppState) -> (&'static str, Style) {
+    let (badge, style) = status_badge(state);
+    match state {
+        AppState::Recording => (badge, style.bg(rec_pulse_color(app.elapsed()))),
+        _ => (badge, style),
     }
 }
 
@@ -889,6 +961,60 @@ fn format_duration(d: std::time::Duration) -> String {
 mod tests {
     use super::*;
     use crate::upload::metadata::EpisodeMetadata;
+
+    #[test]
+    fn bar_column_full_scale_shows_vu_gradient() {
+        let cells = bar_column_cells(1.0, 1.0, 4);
+        assert_eq!(cells.len(), 4);
+        assert!(cells.iter().all(|&(ch, _)| ch == BAR_FULL));
+        // Bottom-up: green body, yellow above 60%, red above 85%.
+        assert_eq!(cells[0].1, OK);
+        assert_eq!(cells[1].1, OK);
+        assert_eq!(cells[2].1, WARN);
+        assert_eq!(cells[3].1, ERR);
+    }
+
+    #[test]
+    fn bar_column_empty_is_blank() {
+        let cells = bar_column_cells(0.0, 0.0, 4);
+        assert!(cells.iter().all(|&(ch, _)| ch == ' '));
+    }
+
+    #[test]
+    fn bar_column_renders_partial_eighths() {
+        // Half of a 4-row column = exactly the bottom two cells.
+        let cells = bar_column_cells(0.5, 0.5, 4);
+        assert_eq!(cells[0].0, BAR_FULL);
+        assert_eq!(cells[1].0, BAR_FULL);
+        assert_eq!(cells[2].0, ' ');
+        // 19/32 = two full cells + 3 eighths into the third.
+        let cells = bar_column_cells(19.0 / 32.0, 0.0, 4);
+        assert_eq!(cells[2].0, BAR_EIGHTHS[3]);
+    }
+
+    #[test]
+    fn bar_column_peak_marker_floats_above_bar() {
+        // Bar at 25%, peak held at 75%: marker sits in the third cell.
+        let cells = bar_column_cells(0.25, 0.75, 4);
+        assert_eq!(cells[0].0, BAR_FULL);
+        assert_eq!(cells[1].0, ' ');
+        assert_eq!(cells[2].0, PEAK_MARK);
+        assert_eq!(cells[3].0, ' ');
+    }
+
+    #[test]
+    fn rec_pulse_breathes_periodically() {
+        use std::time::Duration;
+        let dim = rec_pulse_color(Duration::ZERO);
+        let bright = rec_pulse_color(Duration::from_millis(600));
+        // Same phase one period later ⇒ same color; opposite phase differs.
+        assert_eq!(dim, rec_pulse_color(Duration::from_millis(1200)));
+        assert_ne!(dim, bright);
+        let (Color::Rgb(r_dim, ..), Color::Rgb(r_bright, ..)) = (dim, bright) else {
+            panic!("pulse must be an RGB color");
+        };
+        assert!(r_bright > r_dim, "opposite phase should be brighter");
+    }
 
     #[test]
     fn scroll_start_anchors_at_zero_when_list_fits() {
