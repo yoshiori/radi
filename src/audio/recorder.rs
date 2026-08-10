@@ -6,12 +6,23 @@ use std::sync::mpsc;
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{SampleRate, StreamConfig};
 
+use crate::audio::spectrum::SampleTap;
+
+/// Capture sample rate. The recorder owns this value because its StreamConfig
+/// is what actually enforces it; consumers that need it for analysis math
+/// (e.g. the spectrum analyzer's bin layout) must read it from here so the
+/// two can never silently drift apart.
+pub const SAMPLE_RATE: u32 = 44_100;
+
 pub struct Recorder {
     stream: cpal::Stream,
 }
 
 impl Recorder {
-    pub fn new(peak: Arc<AtomicU32>) -> anyhow::Result<(Self, mpsc::Receiver<Vec<f32>>)> {
+    pub fn new(
+        peak: Arc<AtomicU32>,
+        tap: SampleTap,
+    ) -> anyhow::Result<(Self, mpsc::Receiver<Vec<f32>>)> {
         let host = cpal::default_host();
 
         let device = host
@@ -20,7 +31,7 @@ impl Recorder {
 
         let config = StreamConfig {
             channels: 1,
-            sample_rate: SampleRate(44_100),
+            sample_rate: SampleRate(SAMPLE_RATE),
             buffer_size: cpal::BufferSize::Default,
         };
 
@@ -31,6 +42,7 @@ impl Recorder {
             move |data: &[f32], _info: &cpal::InputCallbackInfo| {
                 let peak_val = data.iter().map(|s| s.abs()).fold(0.0f32, f32::max);
                 peak.store(peak_val.to_bits(), Ordering::Relaxed);
+                tap.push(data);
                 let _ = tx.send(data.to_vec());
             },
             |err| eprintln!("Audio stream error: {err}"),
