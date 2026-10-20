@@ -133,6 +133,7 @@ mod tests {
             podcast_id: "pod".into(),
             api_token: Some("t".into()),
             endpoint: Some(format!("{}/graphql", server.url())),
+            op_account: None,
         };
 
         let updated = rehydrate(dir.path(), &listen).unwrap();
@@ -164,6 +165,7 @@ mod tests {
             podcast_id: "pod".into(),
             api_token: Some("t".into()),
             endpoint: Some(format!("{}/graphql", server.url())),
+            op_account: None,
         };
         let updated = rehydrate(dir.path(), &listen).unwrap();
         assert_eq!(updated, 0);
@@ -197,6 +199,7 @@ mod tests {
             podcast_id: "pod".into(),
             api_token: Some("t".into()),
             endpoint: Some(format!("{}/graphql", server.url())),
+            op_account: None,
         };
 
         let updated = rehydrate(dir.path(), &listen).unwrap();
@@ -237,6 +240,7 @@ mod tests {
             podcast_id: "pod".into(),
             api_token: Some("t".into()),
             endpoint: Some(format!("{}/graphql", server.url())),
+            op_account: None,
         };
 
         let updated = rehydrate(dir.path(), &listen).unwrap();

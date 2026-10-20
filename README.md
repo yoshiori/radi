@@ -102,7 +102,17 @@ Get a token from the LISTEN web UI (user menu → **API Tokens**).
 
 `api_token` values prefixed with `op://` are also supported and resolved at
 runtime via the [1Password CLI](https://developer.1password.com/docs/cli/) if
-you prefer not to store the secret in plain text.
+you prefer not to store the secret in plain text. If the CLI is signed in to
+several 1Password accounts, `op` only searches the default one, so set
+`op_account` to the account holding the item (any value `op read --account`
+accepts, e.g. the sign-in address shown by `op account list`):
+
+```toml
+[listen]
+podcast_id = "your-podcast-id"
+api_token = "op://Private/LISTEN/credential"
+op_account = "my.1password.com"
+```
 
 ## Architecture
 

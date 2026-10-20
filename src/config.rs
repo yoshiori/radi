@@ -13,6 +13,11 @@ pub struct ListenConfig {
     pub api_token: Option<String>,
     #[serde(default)]
     pub endpoint: Option<String>,
+    /// 1Password account (sign-in address, email, or ID) passed to
+    /// `op read --account`. Needed when the CLI is signed in to several
+    /// accounts, because `op` otherwise searches only the default one.
+    #[serde(default)]
+    pub op_account: Option<String>,
 }
 
 impl ListenConfig {
@@ -35,7 +40,7 @@ impl ListenConfig {
                 )
             })?;
         if raw.starts_with("op://") {
-            resolve_op_reference(&raw)
+            resolve_op_reference(&raw, self.op_account.as_deref())
         } else {
             Ok(raw)
         }
@@ -46,18 +51,40 @@ impl ListenConfig {
     }
 }
 
-fn resolve_op_reference(reference: &str) -> anyhow::Result<String> {
+fn resolve_op_reference(reference: &str, account: Option<&str>) -> anyhow::Result<String> {
     let output = std::process::Command::new("op")
-        .args(["read", "--no-newline", reference])
+        .args(op_read_args(reference, account))
         .output()
         .map_err(|e| {
             anyhow::anyhow!("failed to invoke `op` (is the 1Password CLI installed?): {e}")
         })?;
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        anyhow::bail!("`op read {reference}` failed: {}", stderr.trim());
+        anyhow::bail!(
+            "`op read {reference}` failed: {} ({})",
+            stderr.trim(),
+            op_failure_hint(account)
+        );
     }
     Ok(String::from_utf8(output.stdout)?.trim().to_string())
+}
+
+fn op_read_args<'a>(reference: &'a str, account: Option<&'a str>) -> Vec<&'a str> {
+    let mut args = vec!["read", "--no-newline"];
+    if let Some(account) = account {
+        args.extend(["--account", account]);
+    }
+    args.push(reference);
+    args
+}
+
+fn op_failure_hint(account: Option<&str>) -> String {
+    match account {
+        Some(account) => format!(
+            "check that the item exists in 1Password account `{account}` and that `op account list` shows it"
+        ),
+        None => "if `op account list` shows several accounts, set [listen].op_account in config.toml to the one holding the item".to_string(),
+    }
 }
 
 impl Config {
@@ -155,6 +182,7 @@ mod tests {
             podcast_id: "p".into(),
             api_token: None,
             endpoint: None,
+            op_account: None,
         };
         assert_eq!(listen.endpoint_or_default(), ListenConfig::DEFAULT_ENDPOINT);
     }
@@ -165,7 +193,67 @@ mod tests {
             podcast_id: "p".into(),
             api_token: Some("from_config".into()),
             endpoint: None,
+            op_account: None,
         };
         assert_eq!(listen.required_token().unwrap(), "from_config");
+    }
+
+    #[test]
+    fn test_parse_listen_op_account() {
+        let config = parse(
+            r#"
+            [listen]
+            podcast_id = "pod123"
+            api_token = "op://Private/item/credential"
+            op_account = "my.1password.com"
+            "#,
+        )
+        .unwrap();
+        let listen = config.listen.expect("listen section");
+        assert_eq!(listen.op_account.as_deref(), Some("my.1password.com"));
+    }
+
+    #[test]
+    fn test_parse_listen_op_account_defaults_to_none() {
+        let config = parse(
+            r#"
+            [listen]
+            podcast_id = "pod123"
+            "#,
+        )
+        .unwrap();
+        assert_eq!(config.listen.expect("listen section").op_account, None);
+    }
+
+    #[test]
+    fn test_op_read_args_without_account() {
+        assert_eq!(
+            op_read_args("op://V/i/f", None),
+            vec!["read", "--no-newline", "op://V/i/f"]
+        );
+    }
+
+    #[test]
+    fn test_op_read_args_with_account() {
+        assert_eq!(
+            op_read_args("op://V/i/f", Some("my.1password.com")),
+            vec![
+                "read",
+                "--no-newline",
+                "--account",
+                "my.1password.com",
+                "op://V/i/f"
+            ]
+        );
+    }
+
+    #[test]
+    fn test_op_failure_hint_suggests_op_account_when_unset() {
+        assert!(op_failure_hint(None).contains("[listen].op_account"));
+    }
+
+    #[test]
+    fn test_op_failure_hint_names_configured_account() {
+        assert!(op_failure_hint(Some("my.1password.com")).contains("my.1password.com"));
     }
 }
