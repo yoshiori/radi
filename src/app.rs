@@ -657,6 +657,7 @@ mod tests {
             podcast_id: "pid".into(),
             api_token: Some("op://never-read-from-main-thread/entry".into()),
             endpoint: Some("http://127.0.0.1:1/graphql".into()),
+            op_account: None,
         };
 
         let t0 = Instant::now();
@@ -811,6 +812,7 @@ mod tests {
             podcast_id: "pod".into(),
             api_token: Some("t".into()),
             endpoint: Some(format!("{}/graphql", server.url())),
+            op_account: None,
         });
         assert_eq!(app.sync_state(), SyncState::Syncing);
 
