@@ -381,10 +381,28 @@ impl App {
         Ok(())
     }
 
-    pub fn start_upload(&mut self, listen: &ListenConfig, title: String) -> anyhow::Result<()> {
-        let AppState::Done(path) = self.state.clone() else {
+    /// The recording `u` would upload, or `None` when the key should do
+    /// nothing. A just-finished recording wins until its row shows up in
+    /// Recent; otherwise it is the highlighted row, so older recordings
+    /// that were never uploaded can be sent too. Rows that already have a
+    /// sidecar are excluded because re-uploading creates a duplicate draft.
+    pub fn upload_target(&self) -> Option<&Path> {
+        if !self.state.allows_recent_navigation() {
+            return None;
+        }
+        if let Some(fresh) = &self.pending_select {
+            return Some(fresh);
+        }
+        self.selected_recording()
+            .filter(|r| r.episode.is_none())
+            .map(|r| r.path.as_path())
+    }
+
+    pub fn start_upload(&mut self, listen: &ListenConfig) -> anyhow::Result<()> {
+        let Some(path) = self.upload_target().map(Path::to_path_buf) else {
             return Ok(());
         };
+        let title = upload_title(&path);
         // Clone the config so the upload thread owns its own copy and can
         // call resolved_token() itself. Token resolution must not run on
         // the main thread — `op://` references shell out to the 1Password
@@ -483,6 +501,15 @@ impl App {
             _ => resolved,
         };
     }
+}
+
+/// Episode title for a new LISTEN draft: the recording's file name without
+/// extension. The user renames it on listen.style before publishing.
+fn upload_title(path: &Path) -> String {
+    path.file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("recording")
+        .to_string()
 }
 
 /// Pick the selection index for `new_recent` given the previously selected
@@ -652,22 +679,104 @@ mod tests {
         let mut app = App::new(PathBuf::from("."));
         let path = PathBuf::from("./start_upload_regression_nonexistent.mp3");
         app.state = AppState::Done(path.clone());
-
-        let listen = ListenConfig {
-            podcast_id: "pid".into(),
-            api_token: Some("op://never-read-from-main-thread/entry".into()),
-            endpoint: Some("http://127.0.0.1:1/graphql".into()),
-            op_account: None,
-        };
+        app.pending_select = Some(path.clone());
 
         let t0 = Instant::now();
-        app.start_upload(&listen, "title".into()).unwrap();
+        app.start_upload(&unreachable_listen()).unwrap();
         let elapsed = t0.elapsed();
 
         assert!(matches!(app.state, AppState::Uploading(_)));
         assert!(
             elapsed < Duration::from_millis(100),
             "start_upload blocked the main thread for {elapsed:?}"
+        );
+    }
+
+    /// LISTEN config whose token can never resolve and whose endpoint
+    /// refuses connections, so upload threads fail fast without network.
+    fn unreachable_listen() -> ListenConfig {
+        ListenConfig {
+            podcast_id: "pid".into(),
+            api_token: Some("op://never-read-from-main-thread/entry".into()),
+            endpoint: Some("http://127.0.0.1:1/graphql".into()),
+            op_account: None,
+        }
+    }
+
+    fn uploaded_rec(path: &str) -> RecentRecording {
+        RecentRecording {
+            episode: Some(EpisodeMetadata {
+                episode_id: "ep".into(),
+                title: "t".into(),
+                webview_url: "https://listen.style/ep".into(),
+                uploaded_at: "2026-05-01T00:00:00+09:00".into(),
+            }),
+            ..rec(path)
+        }
+    }
+
+    #[test]
+    fn upload_target_is_selected_unuploaded_row_when_idle() {
+        let mut app = App::new(PathBuf::from("."));
+        app.recent = vec![rec("/new.mp3"), rec("/old.mp3")];
+        app.selected_recent = Some(1);
+        assert_eq!(app.upload_target(), Some(Path::new("/old.mp3")));
+    }
+
+    #[test]
+    fn upload_target_skips_already_uploaded_row() {
+        // Re-uploading would create a duplicate draft on LISTEN.
+        let mut app = App::new(PathBuf::from("."));
+        app.recent = vec![uploaded_rec("/done.mp3")];
+        app.selected_recent = Some(0);
+        assert_eq!(app.upload_target(), None);
+    }
+
+    #[test]
+    fn upload_target_is_none_while_busy() {
+        let mut app = App::new(PathBuf::from("."));
+        app.recent = vec![rec("/old.mp3")];
+        app.selected_recent = Some(0);
+        app.state = AppState::Recording;
+        assert_eq!(app.upload_target(), None);
+    }
+
+    #[test]
+    fn upload_target_prefers_fresh_recording_before_its_row_appears() {
+        // Right after `s` the new file is not in Recent yet (rescan is
+        // throttled), but `u` must still act on it, not the old cursor row.
+        let mut app = App::new(PathBuf::from("."));
+        app.recent = vec![rec("/old.mp3")];
+        app.selected_recent = Some(0);
+        app.state = AppState::Done(PathBuf::from("/fresh.mp3"));
+        app.pending_select = Some(PathBuf::from("/fresh.mp3"));
+        assert_eq!(app.upload_target(), Some(Path::new("/fresh.mp3")));
+    }
+
+    #[test]
+    fn start_upload_from_idle_uploads_selected_row() {
+        let mut app = App::new(PathBuf::from("."));
+        app.recent = vec![rec("/new.mp3"), rec("/old.mp3")];
+        app.selected_recent = Some(1);
+        app.start_upload(&unreachable_listen()).unwrap();
+        assert_eq!(app.state, AppState::Uploading(PathBuf::from("/old.mp3")));
+    }
+
+    #[test]
+    fn start_upload_is_noop_without_target() {
+        let mut app = App::new(PathBuf::from("."));
+        app.recent = vec![uploaded_rec("/done.mp3")];
+        app.selected_recent = Some(0);
+        app.start_upload(&unreachable_listen()).unwrap();
+        assert_eq!(app.state, AppState::Idle);
+        assert!(app.upload_thread.is_none());
+    }
+
+    #[test]
+    fn upload_title_is_file_stem() {
+        assert_eq!(
+            upload_title(Path::new("/music/recording_20260501.mp3")),
+            "recording_20260501"
         );
     }
 
