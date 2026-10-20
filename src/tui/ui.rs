@@ -123,7 +123,13 @@ fn render_main(frame: &mut Frame, app: &App, state: &AppState) {
     render_center(frame, chunks[1], app, state, accent, use_big_timer);
     render_level(frame, chunks[2], app, accent);
     render_recent(frame, chunks[3], app, accent);
-    render_hints(frame, chunks[4], state, accent);
+    render_hints(
+        frame,
+        chunks[4],
+        state,
+        app.upload_target().is_some(),
+        accent,
+    );
 }
 
 /// Return the exact rect where the big-header banner is drawn, matching the
@@ -864,7 +870,10 @@ fn format_recent_line(rec: &RecentRecording, is_selected: bool) -> Line<'_> {
     ])
 }
 
-fn render_hints(frame: &mut Frame, area: Rect, state: &AppState, accent: Color) {
+/// Key hints for the bottom row. `can_upload` mirrors `App::upload_target`
+/// so `u` is advertised exactly when pressing it would start an upload
+/// (it is hidden on rows that are already on LISTEN).
+fn hint_items(state: &AppState, can_upload: bool) -> Vec<(&'static str, &'static str)> {
     // State-specific primary chord first, then a shared `↑↓` (+`o`)
     // block whenever the state accepts recent-list navigation. Routing
     // the `↑↓` slot through `allows_recent_navigation` keeps this row
@@ -873,15 +882,23 @@ fn render_hints(frame: &mut Frame, area: Rect, state: &AppState, accent: Color) 
     let mut hints: Vec<(&str, &str)> = match state {
         AppState::Idle => vec![("r", " Record  ")],
         AppState::Recording => vec![("s", " Stop & Save  "), ("q", " Stop & Quit")],
-        AppState::Processing => vec![],
-        AppState::Done(_) => vec![("u", " Upload to LISTEN  ")],
-        AppState::Uploading(_) => vec![],
+        AppState::Processing | AppState::Uploading(_) => vec![],
+        AppState::Done(_) | AppState::UploadFailed { .. } => vec![],
         AppState::Uploaded { .. } => vec![("o", " Open in browser  ")],
-        AppState::UploadFailed { .. } => vec![("u", " Retry Upload  ")],
         AppState::ConfirmQuit { .. } => {
             unreachable!("ConfirmQuit is handled by render as a popup")
         }
     };
+    if can_upload && state.allows_recent_navigation() {
+        // Right after a recording (or a failed attempt) uploading is the
+        // primary action, so it leads; elsewhere it follows the base chord.
+        let at = if matches!(state, AppState::Done(_) | AppState::UploadFailed { .. }) {
+            0
+        } else {
+            hints.len()
+        };
+        hints.insert(at, ("u", " Upload to LISTEN  "));
+    }
     if state.allows_recent_navigation() {
         hints.push(("↑↓", " Select  "));
         // Uploaded already advertises `o` in its base row (it's the
@@ -902,7 +919,11 @@ fn render_hints(frame: &mut Frame, area: Rect, state: &AppState, accent: Color) 
     ) {
         hints.push(("q", " Quit"));
     }
+    hints
+}
 
+fn render_hints(frame: &mut Frame, area: Rect, state: &AppState, can_upload: bool, accent: Color) {
+    let hints = hint_items(state, can_upload);
     let block = Block::default()
         .borders(Borders::TOP)
         .border_style(Style::default().fg(ACCENT_DIM));
@@ -985,6 +1006,35 @@ fn format_duration(d: std::time::Duration) -> String {
 mod tests {
     use super::*;
     use crate::upload::metadata::EpisodeMetadata;
+
+    fn hint_keys(state: &AppState, can_upload: bool) -> Vec<&'static str> {
+        hint_items(state, can_upload)
+            .into_iter()
+            .map(|(k, _)| k)
+            .collect()
+    }
+
+    #[test]
+    fn hints_offer_upload_from_idle_when_a_row_is_uploadable() {
+        assert!(hint_keys(&AppState::Idle, true).contains(&"u"));
+        assert!(!hint_keys(&AppState::Idle, false).contains(&"u"));
+    }
+
+    #[test]
+    fn hints_hide_upload_after_upload_when_row_is_already_uploaded() {
+        let state = AppState::Uploaded {
+            path: "/x.mp3".into(),
+            webview_url: "https://example.invalid".into(),
+        };
+        assert!(!hint_keys(&state, false).contains(&"u"));
+        assert!(hint_keys(&state, true).contains(&"u"));
+    }
+
+    #[test]
+    fn hints_never_offer_upload_while_busy() {
+        assert!(!hint_keys(&AppState::Recording, true).contains(&"u"));
+        assert!(!hint_keys(&AppState::Uploading("/x.mp3".into()), true).contains(&"u"));
+    }
 
     #[test]
     fn bar_column_full_scale_shows_vu_gradient() {

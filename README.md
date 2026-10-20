@@ -63,7 +63,7 @@ radi
 | --- | ----------------------------------------------------------- |
 | `r` | Start a new recording (also: retake after a finished take)  |
 | `s` | Stop and save the current take                              |
-| `u` | Upload the finished take to LISTEN as a DRAFT episode       |
+| `u` | Upload the just-finished take, or the recording selected in Recent, to LISTEN as a DRAFT episode (hidden for already-uploaded rows) |
 | `o` | Open the uploaded episode in your browser                   |
 | `q` | Quit (opens a confirmation popup; stops the take if needed) |
 

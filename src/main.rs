@@ -128,24 +128,9 @@ fn run_app(
                     app.select_recent_next();
                 }
                 KeyCode::Char('u') => {
-                    let path = match &app.state {
-                        AppState::Done(p) | AppState::UploadFailed { path: p, .. } => {
-                            Some(p.clone())
-                        }
-                        _ => None,
-                    };
-                    if let Some(path) = path {
+                    if let Some(path) = app.upload_target().map(|p| p.to_path_buf()) {
                         match listen.as_ref() {
-                            Some(listen) => {
-                                app.state = AppState::Done(path);
-                                let title = app
-                                    .output_path
-                                    .file_stem()
-                                    .and_then(|s| s.to_str())
-                                    .unwrap_or("recording")
-                                    .to_string();
-                                app.start_upload(listen, title)?;
-                            }
+                            Some(listen) => app.start_upload(listen)?,
                             None => {
                                 app.state = AppState::UploadFailed {
                                     path,
